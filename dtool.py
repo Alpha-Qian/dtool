@@ -1,7 +1,7 @@
 import asyncio
 import aiofiles
 import httpx
-import os
+import pathlib
 import pickle
 import time
 
@@ -33,8 +33,8 @@ class DownloadFile:
         self.file_size = None
         self.start_list = PosList([])
         self.end_list =PosList([])
-    async def dowbload(self):
-        respose = await asyncio.create_task(self.down_init())
+    async def download(self):
+        respose = await asyncio.create_task(self.get_headers())
         if self.accept_range:
             await asyncio.create_task(self.download_main(respose))
         else:
@@ -42,11 +42,11 @@ class DownloadFile:
 
     async def get_headers(self):
         self.file = aiofiles.open(self.filename,mode='wb')
-        async with self.client.head('GET', self.url) as response:
-            self.headers=response.headers
-            self.file_size = int(self.headers['content-length'])
-            self.start_list.add(self.file_size)
-            self.accept_range = 'accept-ranges' in self.headers
+        response = await self.client.head(self.url)
+        self.headers=response.headers
+        self.file_size = int(self.headers['content-length'])
+        self.start_list.add(self.file_size)
+        self.accept_range = 'accept-ranges' in self.headers
             
     async def download_main(self,res=None):
         self.down_to = 0
@@ -87,9 +87,8 @@ class DownloadFile:
                     if start_pos < i < end_pos:
                         end_pos = i
 
-                await self.file.seek(writen_pos)#
                 if writen_pos + len_chunk <= end_pos:
-                    with self.lock:
+                    async with self.reslock:
                         await self.file.seek(writen_pos)#
                         await self.file.write(chunk)
                     self.down_to += len_chunk
@@ -97,7 +96,7 @@ class DownloadFile:
                     writen_pos += len_chunk
 
                 else:
-                    with self.reslock:
+                    async with self.reslock:
                         await self.file.seek(writen_pos)#
                         await self.file.write(chunk[ : end_pos-writen_pos])
                     self.down_to += end_pos - writen_pos
