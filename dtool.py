@@ -23,10 +23,7 @@ async def anew_urls(urls,path=None):
         for url in urls:
             tasks.append(tg.creat_task(url))
 
-class DownClient:
-    def __init__(self,):
-        pass
-class DownloadFile:    #下载管理类
+class DownloadFile:    
     client = httpx.AsyncClient()
 
     def __init__(self, url, ):
@@ -43,7 +40,7 @@ class DownloadFile:    #下载管理类
         else:
             pass
 
-    async def get_headers(self):#在函数中定义函数
+    async def get_headers(self):
         self.file = aiofiles.open(self.filename,mode='wb')
         async with self.client.head('GET', self.url) as response:
             self.headers=response.headers
@@ -106,27 +103,23 @@ class DownloadFile:    #下载管理类
                     self.down_to += end_pos - writen_pos
                     self.end_list.move(writen_pos,end_pos)
                     break
-                
-
-                
-
-    async def down_afile(self):
-        '''不允许续传时使用'''
-        await self.down_block(0)
-
-
+    async def restart(self):
+        pass
     async def stop(self,):
         pass
-class download(DownloadFile):
-    client = httpx.AsyncClient()
-    tasks = []
+    async def dumps(self,):
+        return pickle.dumps(self)
     @classmethod
-    async def new():
+    async def loads(cls,data):
+        obj = pickle.loads(data)
+        if type(obj) != cls:
+            raise Exception
+        return obj
+    async def get_data_block(self,):
         pass
-    
 
 class PosList:
-    '''chnk_info现在变成了PosList的子类'''
+    '''待修改'''
     def __init__(self,/,*arg,**kwarg):
         self._list=list(*arg,**kwarg)
         self.sort()
