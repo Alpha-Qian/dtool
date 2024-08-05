@@ -31,8 +31,10 @@ class DownloadFile:
         self.filename = url.split('/')[-1]
         self.accept_range = None
         self.file_size = None
+        self.downed_size = 0
         self.start_list = PosList([])
-        self.end_list =PosList([])
+        self.end_list = PosList([])
+        self.filelock = None
     async def download(self):
         respose = await asyncio.create_task(self.get_headers())
         if self.accept_range:
@@ -49,8 +51,8 @@ class DownloadFile:
         self.accept_range = 'accept-ranges' in self.headers
             
     async def download_main(self,res=None):
-        self.down_to = 0
-        self.reslock = asyncio.Lock()
+        self.downed_size = 0
+        self.filelock = asyncio.Lock()
         self.file =await self.file.__aenter__()
         async with asyncio.TaskGroup() as tg:
             tg.create_task(self.down_block(0,res))
@@ -88,18 +90,18 @@ class DownloadFile:
                         end_pos = i
 
                 if writen_pos + len_chunk <= end_pos:
-                    async with self.reslock:
+                    async with self.filelock:
                         await self.file.seek(writen_pos)#
                         await self.file.write(chunk)
-                    self.down_to += len_chunk
+                    self.downed_size += len_chunk
                     self.end_list.move(writen_pos,len_chunk)
                     writen_pos += len_chunk
 
                 else:
-                    async with self.reslock:
+                    async with self.filelock:
                         await self.file.seek(writen_pos)#
                         await self.file.write(chunk[ : end_pos-writen_pos])
-                    self.down_to += end_pos - writen_pos
+                    self.downed_size += end_pos - writen_pos
                     self.end_list.move(writen_pos,end_pos)
                     break
     async def restart(self):
@@ -118,7 +120,6 @@ class DownloadFile:
         pass
 
 class PosList:
-    '''待修改'''
     def __init__(self,/,*arg,**kwarg):
         self._list=list(*arg,**kwarg)
         self.sort()
