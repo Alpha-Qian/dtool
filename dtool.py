@@ -1,9 +1,8 @@
-import asyncio
-import aiofiles
-import httpx
+import asyncio, httpx, aiofiles
 import pathlib
 import pickle
 import time
+from database import PosList
 
 client = httpx.AsyncClient()
 tasks = []
@@ -11,19 +10,66 @@ result = []
 Path =''
 def new(url,path=None):
     asyncio.run(anew(url,Path))
-
 def new_urls(urls,path=None):
     asyncio.run(anew_urls(urls))
-
 async def anew(url,path=None):
-    new_task = DownloadFile(url)
+    new_task = DownFile(url)
     await new_task.down_init()
 async def anew_urls(urls,path=None):
     async with asyncio.TaskGroup() as tg:
         for url in urls:
             tasks.append(tg.creat_task(url))
 
-class DownloadFile:    
+
+asyncio.Semaphore
+asyncio.TaskGroup
+
+class DownControler:
+    def __init__(self,url,max_sem=32) -> None:
+        self.url=url
+        self.max_sem = max_sem
+        self.down_file = DownFile(url)
+    
+    def __getattr__(self, name):
+        return getattr(self.down_file, name)
+    
+    async def download(self):
+        down_file = self.down_file
+        controler = asyncio.create_task(self.down_control())
+        await asyncio.create_task(down_file.get_headers())
+        if down_file.accept_range:
+            await asyncio.create_task(down_file.download_main())
+        else:
+            pass
+        #controler.cancel()
+        await controler
+    async def monitor(self):
+        len_task = len(self.down_file.task_group)
+        len_sem = self.down_file.sem._value
+    async def down_control(self,contr_func:function[int:'']):
+        download_file = self.down_file
+        sem = download_file.sem
+        self.task_group = download_file.task_group
+        while 1:
+            sem._value
+        
+    async def get_data_chunk(self):
+        return zip(self.down_file.start_list,self.end_list)
+    async def get_empty_chunk(self):
+        return zip(self.end_list[:-1],self.start_list[1:])
+    
+    async def get_speed(self,time):
+        size1 = self.down_file.downed_size
+        asyncio.sleep(time)
+        return (self.down_file.downed_size - size1)/time
+    async def speed_monitor(self,time):
+        pass
+    async def restart(self):
+        pass
+    async def stop(self):
+        pass
+        
+class DownFile:    
     client = httpx.AsyncClient()
 
     def __init__(self, url, ):
@@ -35,12 +81,6 @@ class DownloadFile:
         self.start_list = PosList([])
         self.end_list = PosList([])
         self.filelock = None
-    async def download(self):
-        respose = await asyncio.create_task(self.get_headers())
-        if self.accept_range:
-            await asyncio.create_task(self.download_main(respose))
-        else:
-            pass
 
     async def get_headers(self):
         self.file = aiofiles.open(self.filename,mode='wb')
@@ -50,27 +90,26 @@ class DownloadFile:
         self.start_list.add(self.file_size)
         self.accept_range = 'accept-ranges' in self.headers
             
-    async def download_main(self,res=None):
+    async def download_main(self):
         self.downed_size = 0
         self.filelock = asyncio.Lock()
+        self.sem = asyncio.Semaphore(0)#信号量
         self.file =await self.file.__aenter__()
+        self.sem_num =32
         async with asyncio.TaskGroup() as tg:
-            tg.create_task(self.down_block(0,res))
+            self.task_group = tg
+            #tg.create_task(self.download_control(tg))
+            tg.create_task(self.down_block(0))
             tg.create_task(self.down_block(52428800))
-            newtime=time.time() 
-            a='''
-            while 1:
-                old_to = self.down_to
-                oldtime=newtime
-                await asyncio.sleep(0.05)
-                newtime=time.time()
-                speed = self.down_to - old_to
-                print(f'{self.down_to-self.file_size},{speed/(1024*1024)/(newtime-oldtime):.5}Mb/s----------' , end = '\r')
-                if self.down_to ==self.file_size:
-                    break'''
         await self.file.close()
-                
-
+        
+    async def task_creater(self,):
+        pass
+    async def get_speed():
+        s0,s1,s2,s3,s4 = 0,0,0,0,0
+        while 1:
+            break
+            s1,s2,s3,s4 = s0,s1,s2,s3
 
     async def down_block(self,start_pos,res =None):
         
@@ -82,8 +121,9 @@ class DownloadFile:
 
         async with self.client.stream('GET',self.url,headers = headers) as response:
             end_pos = self.file_size
-
+            self.sem.acquire()#获取信号
             async for chunk in response.aiter_bytes():#<--待修改以避免丢弃多余的内容
+                self.sem.release()#释放信号
                 len_chunk = len(chunk)
                 for i in self.start_list:
                     if start_pos < i < end_pos:
@@ -91,11 +131,12 @@ class DownloadFile:
 
                 if writen_pos + len_chunk <= end_pos:
                     async with self.filelock:
-                        await self.file.seek(writen_pos)#
+                        await self.file.seek(writen_pos)
                         await self.file.write(chunk)
                     self.downed_size += len_chunk
                     self.end_list.move(writen_pos,len_chunk)
                     writen_pos += len_chunk
+                    self.sem.acquire()#进入下一个循环前获取信号
 
                 else:
                     async with self.filelock:
@@ -105,9 +146,10 @@ class DownloadFile:
                     self.end_list.move(writen_pos,end_pos)
                     break
     async def restart(self):
-        pass
+        pass 
     async def stop(self,):
-        pass
+        while self.sem_num > 0:
+
     async def dumps(self,):
         return pickle.dumps(self)
     @classmethod
@@ -116,37 +158,13 @@ class DownloadFile:
         if type(obj) != cls:
             raise Exception
         return obj
-    async def get_data_block(self,):
-        pass
 
-class PosList:
-    def __init__(self,/,*arg,**kwarg):
-        self._list=list(*arg,**kwarg)
-        self.sort()
-    def sort(self,**kwarg):
-        self._list.sort(**kwarg)
-    def __getitem__(self,key):
-        return self._list[key]
-    def __len__(self):
-        return len(self._list)
-    def __iter__(self):
-        return iter(self._list)
 
-    def remove(self,value):
-        self._list.remove(value)
-    def add (self,value):
-        for i in range(len(self)):
-            if value < self[i]:
-                self._list.insert( i, value)
-                return
-        self._list.append(value)
-    def move(self,value,mov):
-        self._list[self._list.index(value)] = value + mov
 
 async def main():
     #url = 'https://' + input('https://')
     url='https://f-droid.org/repo/com.termux_1000.apk'
-    await asyncio.create_task(DownloadFile(url).download())
+    await asyncio.create_task(DownFile(url).download())
 if __name__ =='__main__':
     asyncio.run(main())
     print('end')
