@@ -2,37 +2,45 @@ import asyncio, httpx, aiofiles
 import pathlib
 import pickle
 import time
-from database import PosList
+from models import PosList,monitor
 
 client = httpx.AsyncClient()
 tasks = []
 result = []
 Path =''
-def new(url,path=None):
-    asyncio.run(anew(url,Path))
-def new_urls(urls,path=None):
-    asyncio.run(anew_urls(urls))
-async def anew(url,path=None):
-    new_task = DownFile(url)
-    await new_task.down_init()
-async def anew_urls(urls,path=None):
-    async with asyncio.TaskGroup() as tg:
-        for url in urls:
-            tasks.append(tg.creat_task(url))
-
 
 asyncio.Semaphore
 asyncio.TaskGroup
+aiofiles.open()
+httpx.AsyncClient().stream
+async def test():
+    client= httpx.AsyncClient()
+    aiofiles.open('')
+    async with client.stream('','') as a:
+        a
+        async for i in a.aiter_bytes():
+            pass
+    a =await client.stream('','').__aenter__()
+    a.aiter_bytes()
 
-class DownControler:
-    def __init__(self,url,max_sem=32) -> None:
-        self.url=url
-        self.max_sem = max_sem
-        self.down_file = DownFile(url)
+
+
+
+
+
+class DownControler:#改为多文件下载控制
+    '''self.max_connect'''
+    def __init__(self,max_connect=32) -> None:
+        self.max_connect = max_connect
+        self.connect_num = 0
+        self.speed_list :list[int]= []#统计在不同连接数下的链接速度
     
-    def __getattr__(self, name):
-        return getattr(self.down_file, name)
-    
+    async def speed_statistic(self):
+        pass
+
+    async def new_url(self,url,path):
+        pass
+
     async def download(self):
         down_file = self.down_file
         controler = asyncio.create_task(self.down_control())
@@ -43,21 +51,32 @@ class DownControler:
             pass
         #controler.cancel()
         await controler
+    
+    async def create_task(self):
+        down_file = self.down_file
+        max_empty = 0 
+        for i,e,s in range(len(down_file.end_list)-1),down_file.end_list[:-1],down_file.start_list[1:]:
+            if max_empty < s-e:
+                index = i
+                max_empty = s-e
+        return int(down_file.start_list[index+1] - down_file.end_list[index]/2)
+
     async def monitor(self):
         len_task = len(self.down_file.task_group)
         len_sem = self.down_file.sem._value
+    
     async def down_control(self,contr_func:function[int:'']):
         download_file = self.down_file
         sem = download_file.sem
         self.task_group = download_file.task_group
         while 1:
             sem._value
-        
+
     async def get_data_chunk(self):
         return zip(self.down_file.start_list,self.end_list)
     async def get_empty_chunk(self):
-        return zip(self.end_list[:-1],self.start_list[1:])
-    
+        return zip(self.down_file.end_list[:-1],self.start_list[1:])
+
     async def get_speed(self,time):
         size1 = self.down_file.downed_size
         asyncio.sleep(time)
@@ -68,62 +87,59 @@ class DownControler:
         pass
     async def stop(self):
         pass
-        
-class DownFile:    
+
+class DownFile:
     client = httpx.AsyncClient()
 
-    def __init__(self, url, ):
+    def __init__(self, url, path):
         self.url = url
         self.filename = url.split('/')[-1]
+        self.file = path                    ####
         self.accept_range = None
         self.file_size = None
         self.downed_size = 0
         self.start_list = PosList([])
         self.end_list = PosList([])
-        self.filelock = None
-
-    async def get_headers(self):
-        self.file = aiofiles.open(self.filename,mode='wb')
-        response = await self.client.head(self.url)
-        self.headers=response.headers
-        self.file_size = int(self.headers['content-length'])
-        self.start_list.add(self.file_size)
-        self.accept_range = 'accept-ranges' in self.headers
-            
-    async def download_main(self):
-        self.downed_size = 0
         self.filelock = asyncio.Lock()
-        self.sem = asyncio.Semaphore(0)#信号量
-        self.file =await self.file.__aenter__()
-        self.sem_num =32
+
+    async def download(self):
         async with asyncio.TaskGroup() as tg:
-            self.task_group = tg
-            #tg.create_task(self.download_control(tg))
-            tg.create_task(self.down_block(0))
-            tg.create_task(self.down_block(52428800))
-        await self.file.close()
-        
-    async def task_creater(self,):
+            tg.create_task(self.down_block(first_connect= True))
+            tg.create_task(self.down_control())
+
+
+    async def down_control(self):
         pass
-    async def get_speed():
-        s0,s1,s2,s3,s4 = 0,0,0,0,0
-        while 1:
-            break
-            s1,s2,s3,s4 = s0,s1,s2,s3
 
-    async def down_block(self,start_pos,res =None):
-        
+    async def create_task(self):
+        max_empty = 0 
+        for i,e,s in range(len(self.end_list)-1),self.end_list[:-1],self.start_list[1:]:
+            if max_empty < s-e:
+                index = i
+                max_empty = s-e
+        return int(self.start_list[index+1] - self.end_list[index]/2)
+
+    async def get_headers(self,headers):#有问题
+        self.headers=headers
+        self.file_size = int(headers['content-length'])#####
+        self.start_list.add(self.file_size)
+        self.accept_range = 'accept-ranges' in headers
+        return self.accept_range
+
+
+    async def down_block(self,start_pos = 0,first_connect = False):
         self.start_list.add(start_pos)
-
         writen_pos = start_pos
         self.end_list.add(writen_pos)
         headers = {"Range": f"bytes={start_pos}-{self.file_size-1}"}
-
         async with self.client.stream('GET',self.url,headers = headers) as response:
+
+            if first_connect:
+                if await self.get_headers(response.headers):
+                    asyncio.create_task(self.down_control)
+                
             end_pos = self.file_size
-            self.sem.acquire()#获取信号
             async for chunk in response.aiter_bytes():#<--待修改以避免丢弃多余的内容
-                self.sem.release()#释放信号
                 len_chunk = len(chunk)
                 for i in self.start_list:
                     if start_pos < i < end_pos:
@@ -136,7 +152,6 @@ class DownFile:
                     self.downed_size += len_chunk
                     self.end_list.move(writen_pos,len_chunk)
                     writen_pos += len_chunk
-                    self.sem.acquire()#进入下一个循环前获取信号
 
                 else:
                     async with self.filelock:
@@ -145,11 +160,13 @@ class DownFile:
                     self.downed_size += end_pos - writen_pos
                     self.end_list.move(writen_pos,end_pos)
                     break
-    async def restart(self):
-        pass 
-    async def stop(self,):
-        while self.sem_num > 0:
+                if end_pos - writen_pos < 16384:
+                    pass
+    
 
+    async def output(self):
+        pass
+    
     async def dumps(self,):
         return pickle.dumps(self)
     @classmethod
@@ -158,6 +175,11 @@ class DownFile:
         if type(obj) != cls:
             raise Exception
         return obj
+
+
+
+
+
 
 
 
