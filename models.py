@@ -24,12 +24,15 @@ class PosList:
         self._list.append(value)
     def move(self,value,mov):
         self._list[self._list.index(value)] = value + mov
+
+
 class DownBlock:
     def __init__(self,url,start_pos,tracker:PosList):
         self.url=url
         self.start_pos=start_pos
     async def start(self):
         async with httpx.stream('GET',self.url) as response:
+            pass
 
 class monitor:
     def __init__(self) -> None:
@@ -46,6 +49,7 @@ class monitor:
         
     async def __aexit__(self):
         await self.task
+
 def repr(bytes):
     pass
 

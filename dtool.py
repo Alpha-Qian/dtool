@@ -94,18 +94,22 @@ class DownFile:
     def __init__(self, url, path):
         self.url = url
         self.filename = url.split('/')[-1]
-        self.file = path                    ####
+        self.file = await aiofiles.open(self.filename,'wb')
         self.accept_range = None
         self.file_size = None
         self.downed_size = 0
         self.start_list = PosList([])
         self.end_list = PosList([])
         self.filelock = asyncio.Lock()
+        self.downloading = asyncio.Event()
+
 
     async def download(self):
+        self.downloading.set()
         async with asyncio.TaskGroup() as tg:
             tg.create_task(self.down_block(first_connect= True))
             tg.create_task(self.down_control())
+        self.file.close()
 
 
     async def down_control(self):
@@ -119,15 +123,14 @@ class DownFile:
                 max_empty = s-e
         return int(self.start_list[index+1] - self.end_list[index]/2)
 
-    async def get_headers(self,headers):#有问题
+    async def save_info(self,headers):#存在问题
         self.headers=headers
         self.file_size = int(headers['content-length'])#####
         self.start_list.add(self.file_size)
         self.accept_range = 'accept-ranges' in headers
         return self.accept_range
 
-
-    async def down_block(self,start_pos = 0,first_connect = False):
+    async def down_block(self,start_pos = 0,/,first_connect = False):
         self.start_list.add(start_pos)
         writen_pos = start_pos
         self.end_list.add(writen_pos)
@@ -135,17 +138,18 @@ class DownFile:
         async with self.client.stream('GET',self.url,headers = headers) as response:
 
             if first_connect:
-                if await self.get_headers(response.headers):
+                if await self.save_info(response.headers):
                     asyncio.create_task(self.down_control)
                 
-            end_pos = self.file_size
+            stop_pos = self.file_size#defaut stop_pos
             async for chunk in response.aiter_bytes():#<--待修改以避免丢弃多余的内容
+                self.downloading.wait()
                 len_chunk = len(chunk)
                 for i in self.start_list:
-                    if start_pos < i < end_pos:
-                        end_pos = i
+                    if start_pos < i < stop_pos:
+                        stop_pos = i
 
-                if writen_pos + len_chunk <= end_pos:
+                if writen_pos + len_chunk <= stop_pos:
                     async with self.filelock:
                         await self.file.seek(writen_pos)
                         await self.file.write(chunk)
@@ -156,21 +160,33 @@ class DownFile:
                 else:
                     async with self.filelock:
                         await self.file.seek(writen_pos)#
-                        await self.file.write(chunk[ : end_pos-writen_pos])
-                    self.downed_size += end_pos - writen_pos
-                    self.end_list.move(writen_pos,end_pos)
+                        await self.file.write(chunk[ : stop_pos-writen_pos])
+                    self.downed_size += stop_pos - writen_pos
+                    self.end_list.remove(writen_pos)
+                    self.start_list.remove(stop_pos)
                     break
-                if end_pos - writen_pos < 16384:
+                if stop_pos - writen_pos < len_chunk:
                     pass
+    def incorp_list(self):
+        for i in range(len(self.end_list)):
+            if self.end_list[i] == self.start_list[i+1]:
+                del self.end_list[i],self.start_list[i+1]
     
-
-    async def output(self):
-        pass
+    async def get_info(self):
+        async with client.stream('HEAD',self.url) as response:
+            self.save_info(response)
     
-    async def dumps(self,):
+    async def stop(self):
+        for i in self.task_group._task:
+            i.cancel()
+    
+    async def dumps(self):
+        await self.stop()
         return pickle.dumps(self)
     @classmethod
     async def loads(cls,data):
+        return pickle.loads(data)
+    
         obj = pickle.loads(data)
         if type(obj) != cls:
             raise Exception
