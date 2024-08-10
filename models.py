@@ -3,8 +3,9 @@ import dtool
 
 class PosList:
     def __init__(self,/,*arg,**kwarg):
-        self._list=list(*arg,**kwarg)
-        self.sort()
+        self._list = []
+        #self._list=list(*arg,**kwarg)
+        #self.sort()
     def sort(self,**kwarg):
         self._list.sort(**kwarg)
     def __getitem__(self,key):
@@ -24,6 +25,21 @@ class PosList:
         self._list.append(value)
     def move(self,value,mov):
         self._list[self._list.index(value)] = value + mov
+
+
+class ChunkList:
+    '''[(start,process,end),*]'''
+    def __init__(self) -> None:
+        self.chunk_list=[]
+    def __getitem__(self,key):
+        return self.chunk_list[key]
+    def __len__(self):
+        return len(self.chunk_list)
+    def __iter__(self):
+        return iter(self.chunk_list)
+    
+    def new_task(self,start_pos):
+        self.chunk_list.append((start_pos,start_pos,en))
 
 
 class DownBlock:

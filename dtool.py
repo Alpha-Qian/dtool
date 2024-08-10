@@ -1,4 +1,5 @@
 import asyncio, httpx, aiofiles
+from asyncio import Event,Lock
 import pathlib
 import pickle
 import time
@@ -52,15 +53,6 @@ class DownControler:#改为多文件下载控制
         #controler.cancel()
         await controler
     
-    async def create_task(self):
-        down_file = self.down_file
-        max_empty = 0 
-        for i,e,s in range(len(down_file.end_list)-1),down_file.end_list[:-1],down_file.start_list[1:]:
-            if max_empty < s-e:
-                index = i
-                max_empty = s-e
-        return int(down_file.start_list[index+1] - down_file.end_list[index]/2)
-
     async def monitor(self):
         len_task = len(self.down_file.task_group)
         len_sem = self.down_file.sem._value
@@ -98,24 +90,33 @@ class DownFile:
         self.accept_range = None
         self.file_size = None
         self.downed_size = 0
-        self.start_list = PosList([])
-        self.end_list = PosList([])
-        self.filelock = asyncio.Lock()
-        self.downloading = asyncio.Event()
 
+        self.start_list = PosList()
+        self.end_list = PosList()
+        self.stop_list = PosList()#存储已分配进度
+
+        self.filelock = Lock()
+        self.start = Event()
+        self.stop = Event()
+        self.dumps = Event()
 
     async def download(self):
-        self.downloading.set()
         async with asyncio.TaskGroup() as tg:
-            tg.create_task(self.down_block(first_connect= True))
+            self.task_group = tg
+            tg.create_task(self.down_control(tg))
+            tg.create_task(self.down_block(save_info= True))
             tg.create_task(self.down_control())
         self.file.close()
 
+    async def down_control(self,task_group):
+        await self.start.wait()
+        if not self.accept_range:
+            return
+        while 1:
+            if 1==1:
+                asyncio.create_task(self.create_task())
 
-    async def down_control(self):
-        pass
-
-    async def create_task(self):
+    def create_task(self):
         max_empty = 0 
         for i,e,s in range(len(self.end_list)-1),self.end_list[:-1],self.start_list[1:]:
             if max_empty < s-e:
@@ -123,50 +124,57 @@ class DownFile:
                 max_empty = s-e
         return int(self.start_list[index+1] - self.end_list[index]/2)
 
-    async def save_info(self,headers):#存在问题
+    def save_info(self,headers):#存在问题
         self.headers=headers
         self.file_size = int(headers['content-length'])#####
         self.start_list.add(self.file_size)
         self.accept_range = 'accept-ranges' in headers
-        return self.accept_range
+        self.start.set()
 
-    async def down_block(self,start_pos = 0,/,first_connect = False):
+    async def down_block(self,start_pos = 0,/,save_info = False):
+        #start_list = self.start_list
         self.start_list.add(start_pos)
         writen_pos = start_pos
         self.end_list.add(writen_pos)
+        self.stop_list.add(stop_pos)######
         headers = {"Range": f"bytes={start_pos}-{self.file_size-1}"}
         async with self.client.stream('GET',self.url,headers = headers) as response:
 
-            if first_connect:
+            if save_info:
                 if await self.save_info(response.headers):
                     asyncio.create_task(self.down_control)
-                
             stop_pos = self.file_size#defaut stop_pos
+
+            task_finish = False
             async for chunk in response.aiter_bytes():#<--待修改以避免丢弃多余的内容
                 self.downloading.wait()
                 len_chunk = len(chunk)
+
                 for i in self.start_list:
                     if start_pos < i < stop_pos:
                         stop_pos = i
-
-                if writen_pos + len_chunk <= stop_pos:
-                    async with self.filelock:
-                        await self.file.seek(writen_pos)
-                        await self.file.write(chunk)
-                    self.downed_size += len_chunk
-                    self.end_list.move(writen_pos,len_chunk)
-                    writen_pos += len_chunk
-
-                else:
-                    async with self.filelock:
-                        await self.file.seek(writen_pos)#
-                        await self.file.write(chunk[ : stop_pos-writen_pos])
-                    self.downed_size += stop_pos - writen_pos
+                
+                if writen_pos + len_chunk > stop_pos:
+                    task_finish = True
+                    chunk = chunk[: stop_pos - writen_pos]
+                    len_chunk = len(chunk)
+                                
+                async with self.filelock:
+                    await self.file.seek(writen_pos)
+                    await self.file.write(chunk)
+                
+                writen_pos += len_chunk
+                self.end_list.move(writen_pos,len_chunk)
+                self.downed_size += len_chunk
+                
+                if task_finish:
                     self.end_list.remove(writen_pos)
                     self.start_list.remove(stop_pos)
                     break
-                if stop_pos - writen_pos < len_chunk:
+                elif stop_pos - writen_pos < len_chunk:
                     pass
+
+
     def incorp_list(self):
         for i in range(len(self.end_list)):
             if self.end_list[i] == self.start_list[i+1]:
@@ -194,7 +202,14 @@ class DownFile:
 
 
 
-
+class DownBlocks:
+    def __init__(self,task) -> None:
+        self.task_list = []
+    async def new(self,task):
+        self.tasks.append(task)
+        pass
+    async def stop(self):
+        self.task.cancel()
 
 
 
