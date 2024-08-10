@@ -2,6 +2,7 @@ import asyncio,httpx,aiofiles
 import dtool
 
 class PosList:
+    '''即将弃用'''
     def __init__(self,/,*arg,**kwarg):
         self._list = []
         #self._list=list(*arg,**kwarg)
@@ -30,7 +31,8 @@ class PosList:
 class ChunkList:
     '''list[ (start, process, plan_state:bool),* ]'''
     def __init__(self,file_size) -> None:
-        self.file_size = 0
+        self.file_size = file_size
+        mark = (file_size,None,None)
         self._list :list[ tuple[int, int, bool] ]= []
 
     def __len__(self):
@@ -40,7 +42,7 @@ class ChunkList:
         return iter(self._list)
     
     def __getitem__(self,key) -> tuple[int,int,bool]:#???????
-        return self._list[key]
+        return self._list[key] if key < len(self) else (self.file_size,)
     
     def find_index(self,start_pos:int) -> int['index']:
         for i in range(len(self)):
@@ -64,20 +66,21 @@ class ChunkList:
         self._list[self.find_index(start_pos)][2] = False
 
     def finish_chunk(self):
-        pass#甚至不需要取反，好像没有纯在的必要
+        chunks = []
+        for i in self:
+            chunks.append( i[0, 2] )
+        
     def unfinish_chunk(self):
-        chunks=[]
-        for i in self:
-            if i[2] == True:
-                chunks.append((i[1],'?'))
-
-            
-
+        chunks = []
+        for i in range(len(self)):
+            if self[i][2] == True:
+                chunks.append( (self[i][1], self[i+1][0]) )
+          
     def unplan_chunk(self):
-        chunks=[]
-        for i in self:
-            if i[2] == False:
-                chunks.append((i[1],'?'))
+        chunks = []
+        for i in range(len(self)):
+            if self[i][2] == False:
+                chunks.append( (self[i][1], self[i+1][0]) )
     
 
 

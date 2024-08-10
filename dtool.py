@@ -146,7 +146,7 @@ class DownFile:
             stop_pos = self.file_size#defaut stop_pos
 
             task_finish = False
-            async for chunk in response.aiter_bytes():#<--待修改以避免丢弃多余的内容
+            async for chunk in response.aiter_bytes()#<--待修改以避免丢弃多余的内容
                 self.downloading.wait()
                 len_chunk = len(chunk)
 
