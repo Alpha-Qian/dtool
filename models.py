@@ -28,18 +28,57 @@ class PosList:
 
 
 class ChunkList:
-    '''[(start,process,end),*]'''
-    def __init__(self) -> None:
-        self.chunk_list=[]
-    def __getitem__(self,key):
-        return self.chunk_list[key]
+    '''list[ (start, process, plan_state:bool),* ]'''
+    def __init__(self,file_size) -> None:
+        self.file_size = 0
+        self._list :list[ tuple[int, int, bool] ]= []
+
     def __len__(self):
-        return len(self.chunk_list)
-    def __iter__(self):
-        return iter(self.chunk_list)
+        return len(self._list)
     
-    def new_task(self,start_pos):
-        self.chunk_list.append((start_pos,start_pos,en))
+    def __iter__(self):
+        return iter(self._list)
+    
+    def __getitem__(self,key) -> tuple[int,int,bool]:#???????
+        return self._list[key]
+    
+    def find_index(self,start_pos:int) -> int['index']:
+        for i in range(len(self)):
+            if self._list[i][0] == start_pos:
+                return i
+        raise KeyError('cannot find the start_pos')
+    
+    def add (self,start_pos):
+        '''add a new task'''
+        for i in range(len(self)):
+            if start_pos < self[i][0]:
+                self._list.insert((start_pos,start_pos,True))
+                return
+        self._list.append((start_pos,start_pos,True))
+    
+    def record(self,stat_pos,end_pos):
+        self[self.find_index(stat_pos)][1]=end_pos
+        
+    def remove(self,start_pos):
+        '''called when task remove'''
+        self._list[self.find_index(start_pos)][2] = False
+
+    def finish_chunk(self):
+        pass#甚至不需要取反，好像没有纯在的必要
+    def unfinish_chunk(self):
+        chunks=[]
+        for i in self:
+            if i[2] == True:
+                chunks.append((i[1],'?'))
+
+            
+
+    def unplan_chunk(self):
+        chunks=[]
+        for i in self:
+            if i[2] == False:
+                chunks.append((i[1],'?'))
+    
 
 
 class DownBlock:
