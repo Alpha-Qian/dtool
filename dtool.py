@@ -109,22 +109,26 @@ class DownFile:
             return
         while 1:
             if 1==1:
-                asyncio.create_task(self.create_task())
+                asyncio.create_task(self.load_balance())
 
-    def create_task(self):        #负载均衡
+    def load_balance(self):        #负载均衡
         chunk_list = self.chunk_list
-        chunk_list.unfinish_chunk()
-        chunk_list.unplan_chunk
         max_len = 0
-        #max()
-        for i in chunk_list.unfinish_chunk():#待优化
-            if len(i) > max_len:
-                max_len = len(i)
-                max_index = i.start
-        for i in chunk_list.unplan_chunk():
-            if len(i) * 2 > max_len:
-                max_len = len(i) * 2
-                max_index = i.start
+        empty_chunks = chunk_list.empty_chunk()
+        for i in empty_chunks:
+            length = len(i)
+            if i.state == False:
+                length *= 2
+            if length > max_len:
+                max_len = length
+                biggest_chunk = i
+        if biggest_chunk.state == True:
+            return ( biggest_chunk.start + biggest_chunk.end ) // 2
+        else:
+            return biggest_chunk.start
+            
+
+
         
 
     def save_info(self,headers):#存在问题

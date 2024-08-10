@@ -11,7 +11,7 @@ class Chunk:
     def __len__(self):
         return self.end - self.start
     
-    def __getitem__(self,key):
+    def __getitem__(self,key) -> int|bool:
         match key:
             case 0:
                 return self.start
@@ -39,17 +39,17 @@ class ChunkList:
     def __getitem__(self,key) -> Chunk:
         return self._list[key] if key < len(self) else Chunk(self.file_size, None, None)
     
-    def find_index(self,start_pos:int) -> int['index']:
+    def start_index(self, start_pos:int) -> int['index']:
         for i in range(len(self)):
             if self[i].start == start_pos:
                 return i
         raise KeyError('cannot find the start_pos')
-    
-    def start_index():
-        pass
-    
-    def end_index():
-        pass
+
+    def end_index(self, end_pos:int) -> int['index']:
+        for i in range(len(self)):
+            if self[i].end == end_pos:
+                return i
+        raise KeyError('cannot find the end_pos')
 
     def add (self,start_pos:int):
         '''add a new task'''
@@ -60,11 +60,11 @@ class ChunkList:
         self._list.append( Chunk(start_pos, start_pos, True) )
     
     def record(self, stat_pos, mov_len):
-        self[self.find_index(stat_pos)].end += mov_len
+        self[self.start_index(stat_pos)].end += mov_len
         
     def remove(self,start_pos):
         '''called when task remove'''
-        self._list[self.find_index(start_pos)].state = False
+        self._list[self.start_index(start_pos)].state = False
 
     
     def empty_chunk(self) -> list[Chunk]:
