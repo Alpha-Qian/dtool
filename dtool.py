@@ -1,9 +1,10 @@
+import aiofiles.os
 import asyncio, httpx, aiofiles
 from asyncio import Event,Lock
 import pathlib
 import pickle
 import time
-from models import PosList,monitor
+from models import PosList,ChunkList,monitor
 
 client = httpx.AsyncClient()
 tasks = []
@@ -23,11 +24,7 @@ async def test():
             pass
     a =await client.stream('','').__aenter__()
     a.aiter_bytes()
-
-
-
-
-
+    
 
 class DownControler:#改为多文件下载控制
     '''self.max_connect'''
@@ -91,9 +88,7 @@ class DownFile:
         self.file_size = None
         self.downed_size = 0
 
-        self.start_list = PosList()
-        self.end_list = PosList()
-        self.stop_list = PosList()#存储已分配进度
+        self.chunk_list = ChunkList()
 
         self.filelock = Lock()
         self.start = Event()
@@ -116,13 +111,21 @@ class DownFile:
             if 1==1:
                 asyncio.create_task(self.create_task())
 
-    def create_task(self):
-        max_empty = 0 
-        for i,e,s in range(len(self.end_list)-1),self.end_list[:-1],self.start_list[1:]:
-            if max_empty < s-e:
-                index = i
-                max_empty = s-e
-        return int(self.start_list[index+1] - self.end_list[index]/2)
+    def create_task(self):        #负载均衡
+        chunk_list = self.chunk_list
+        chunk_list.unfinish_chunk()
+        chunk_list.unplan_chunk
+        max_len = 0
+        #max()
+        for i in chunk_list.unfinish_chunk():#待优化
+            if len(i) > max_len:
+                max_len = len(i)
+                max_index = i.start
+        for i in chunk_list.unplan_chunk():
+            if len(i) * 2 > max_len:
+                max_len = len(i) * 2
+                max_index = i.start
+        
 
     def save_info(self,headers):#存在问题
         self.headers=headers
@@ -132,11 +135,11 @@ class DownFile:
         self.start.set()
 
     async def down_block(self,start_pos = 0,/,save_info = False):
-        #start_list = self.start_list
-        self.start_list.add(start_pos)
-        writen_pos = start_pos
-        self.end_list.add(writen_pos)
-        self.stop_list.add(stop_pos)######
+        chunk_list = self.chunk_list
+        chunk_list.add(start_pos)
+
+        process = start_pos
+
         headers = {"Range": f"bytes={start_pos}-{self.file_size-1}"}
         async with self.client.stream('GET',self.url,headers = headers) as response:
 
@@ -146,39 +149,32 @@ class DownFile:
             stop_pos = self.file_size#defaut stop_pos
 
             task_finish = False
-            async for chunk in response.aiter_bytes()#<--待修改以避免丢弃多余的内容
+            async for chunk in response.aiter_bytes():   #<--待修改以避免丢弃多余的内容
                 self.downloading.wait()
                 len_chunk = len(chunk)
 
-                for i in self.start_list:
-                    if start_pos < i < stop_pos:
-                        stop_pos = i
+                for i in chunk_list:
+                    if start_pos < i[0] < stop_pos:
+                        stop_pos = i[0]
                 
-                if writen_pos + len_chunk > stop_pos:
+                if process + len_chunk > stop_pos:
                     task_finish = True
-                    chunk = chunk[: stop_pos - writen_pos]
+                    chunk = chunk[: stop_pos - process]
                     len_chunk = len(chunk)
                                 
                 async with self.filelock:
-                    await self.file.seek(writen_pos)
+                    await self.file.seek(process)
                     await self.file.write(chunk)
                 
-                writen_pos += len_chunk
-                self.end_list.move(writen_pos,len_chunk)
+                process += len_chunk
+                chunk_list.record(process,len_chunk)
                 self.downed_size += len_chunk
                 
                 if task_finish:
-                    self.end_list.remove(writen_pos)
-                    self.start_list.remove(stop_pos)
+                    chunk_list.remove(start_pos)
                     break
-                elif stop_pos - writen_pos < len_chunk:
+                elif stop_pos - process < len_chunk:
                     pass
-
-
-    def incorp_list(self):
-        for i in range(len(self.end_list)):
-            if self.end_list[i] == self.start_list[i+1]:
-                del self.end_list[i],self.start_list[i+1]
     
     async def get_info(self):
         async with client.stream('HEAD',self.url) as response:
@@ -190,6 +186,8 @@ class DownFile:
     
     async def dumps(self):
         await self.stop()
+        chunk_list = self.chunk_list
+        chunk_list.file_name = self.filename
         return pickle.dumps(self)
     @classmethod
     async def loads(cls,data):
