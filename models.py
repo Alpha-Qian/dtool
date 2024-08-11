@@ -1,4 +1,5 @@
 import asyncio,httpx,aiofiles
+from asyncio import Task
 import dtool
 
 class Chunk:
@@ -85,6 +86,43 @@ class ChunkList:
             if self[i].state == False:
                 chunks.append( Chunk( self[i].end, self[i+1].start, False ) )
         return chunks
+
+
+class TaskList:
+    __slots__ = ('_list',)
+
+    def __init__(self) -> None:
+        self._list:list[Task] = []
+    
+    def __len__(self):
+        self.check()
+        return len(self._list)
+    
+    async def __await__(self):
+        for i in self._list:
+            await i
+
+    async def __aenter__(self):
+        return self
+    
+    async def __aexit__(self,exc_type, exc_value, traceback):
+        await self
+        return False
+    
+    def check(self):
+        for i in range(len(self._list)):
+            if self._list[i].done() == True:
+                del self._list[i]
+
+    def new(self,coro):
+        task = asyncio.create_task(coro)
+        self._list.append(task)
+    
+    def add(self,task:Task):
+        self._list.append(task)
+
+    
+        
 
 
 class FileInfo:

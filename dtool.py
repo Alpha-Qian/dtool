@@ -1,4 +1,4 @@
-import aiofiles.os
+import aiofiles
 import asyncio, httpx, aiofiles
 from asyncio import Event,Lock
 import pathlib
@@ -82,34 +82,66 @@ class DownFile:
 
     def __init__(self, url, path):
         self.url = url
+        self.path = path
         self.filename = url.split('/')[-1]
-        self.file = await aiofiles.open(self.filename,'wb')
+
+        self.file_cro = aiofiles.open(self.filename,'wb')
         self.accept_range = None
         self.file_size = None
         self.downed_size = 0
+        self.speed = 0
 
         self.chunk_list = ChunkList()
+        self.task_group :list[asyncio.Task]= []
 
         self.filelock = Lock()
         self.start = Event()
         self.stop = Event()
         self.dumps = Event()
 
-    async def download(self):
-        async with asyncio.TaskGroup() as tg:
-            self.task_group = tg
-            tg.create_task(self.down_control(tg))
-            tg.create_task(self.down_block(save_info= True))
-            tg.create_task(self.down_control())
+    async def download(self,targt_task_num,auto = True):
+        if len(self.task_group) < targt_task_num:
+            self.create_task(self.load_balance())
+        if auto:
+            pass
+        self.file = await self.file_cro
         self.file.close()
 
-    async def down_control(self,task_group):
+    async def down_control(self):
         await self.start.wait()
+        speed_list :list[int:'max_speed']= [] 
         if not self.accept_range:
             return
-        while 1:
-            if 1==1:
-                asyncio.create_task(self.load_balance())
+        for i in range(len(self.task_group)):
+            asyncio.sleep(0.5)
+            if self.task_group[i].done():
+                del self.task_group[i]
+            if len(speed_list) < len(self.task_group):
+                speed_list.append(0)8
+            speed_list[ len(self.task_group) ] =
+            if self.downed_size < self.file_size:
+                asyncio.create_task(self.down_block( self.load_balance()))
+                
+    def speed_monitor(self):
+        times = []
+        sizes = []
+        while True:
+            size = yield
+            t=time.time()
+
+            sizes.append()
+            times.append(time.time())
+
+            length = len(self.task_group)
+            if len(sizes) > length:
+                sizes.pop(0)
+                times.pop(0)
+            yield sum(sizes) / time.time() - times[0]            
+
+            
+        
+
+        
 
     def load_balance(self):        #负载均衡
         chunk_list = self.chunk_list
@@ -125,11 +157,7 @@ class DownFile:
         if biggest_chunk.state == True:
             return ( biggest_chunk.start + biggest_chunk.end ) // 2
         else:
-            return biggest_chunk.start
-            
-
-
-        
+            return biggest_chunk.start     
 
     def save_info(self,headers):#存在问题
         self.headers=headers
@@ -139,6 +167,8 @@ class DownFile:
         self.start.set()
 
     async def down_block(self,start_pos = 0,/,save_info = False):
+        self.task_group.append(asyncio.current_task())
+
         chunk_list = self.chunk_list
         chunk_list.add(start_pos)
 
@@ -153,9 +183,14 @@ class DownFile:
             stop_pos = self.file_size#defaut stop_pos
 
             task_finish = False
+            t0 = time.time()
             async for chunk in response.aiter_bytes():   #<--待修改以避免丢弃多余的内容
-                self.downloading.wait()
                 len_chunk = len(chunk)
+                t1 = time.time()
+                speed = len_chunk / (t1-t0)#在DownChunk中实现
+                t0 = t1
+                self.downloading.wait()
+                
 
                 for i in chunk_list:
                     if start_pos < i[0] < stop_pos:
@@ -193,6 +228,7 @@ class DownFile:
         chunk_list = self.chunk_list
         chunk_list.file_name = self.filename
         return pickle.dumps(self)
+   
     @classmethod
     async def loads(cls,data):
         return pickle.loads(data)
@@ -209,6 +245,8 @@ class DownBlocks:
         self.task_list = []
     async def new(self,task):
         self.tasks.append(task)
+        pass
+    async def speed_monitor(self):
         pass
     async def stop(self):
         self.task.cancel()
