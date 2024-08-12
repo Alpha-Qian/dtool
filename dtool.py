@@ -65,7 +65,7 @@ class DownFile:
         self.path = path
         self.filename = url.split('/')[-1]
 
-        self.file_cro = aiofiles.open(self.filename,'wb')
+        self.file_cro = aiofiles.open(self.filename,'w+b')# w+b:覆盖读写，会清除数据 r+b:插入读写
         self.accept_range = None
         self.file_size = None
         self.downed_size = 0
@@ -187,11 +187,55 @@ class DownFile:
 
 
 class DownBlocks:
-    def __init__(self,task) -> None:
+    def __init__(self,url,file,start,end):
+        self.url = url
+        self.file = file
+        self.start = start
+        self.end = end
+        self.process = start
+    async def run(self):
+        self.task_num += 1
+        try:
+            self.task_group.append(asyncio.current_task())
+            chunk_list = self.chunk_list
+            chunk_list.add(start_pos)
+            process = start_pos
+            headers = {"Range": f"bytes={start_pos}-{self.file_size-1}"}
+            async with self.client.stream('GET',self.url,headers = headers) as response:
+                if save_info:
+                    self.save_info(headers)
 
-    async def new(self,task):
-        self.tasks.append(task)
-        pass
+                stop_pos = self.file_size#defaut stop_pos
+                task_finish = False
+                t0 = time.time()
+
+                len_stream = 16384
+                async for chunk in response.aiter_bytes(len_stream):   #<--待修改以避免丢弃多余的内容
+                    len_chunk = len(chunk)
+                    for i in chunk_list:
+                        if start_pos < i.start < stop_pos:
+                            stop_pos = i.start
+                    if process + len_chunk > stop_pos:
+                        chunk = chunk[: stop_pos - process]
+                        len_chunk = len(chunk)
+                    
+                    async with self.filelock:
+                        await self.file.seek(process)
+                        await self.file.write(chunk)
+                    process += len_chunk
+                    chunk_list.record(process,len_chunk)
+                    self.downed_size += len_chunk
+                    
+                    if stop_pos - process < len_stream:
+                        len_stream = stop_pos - process + 8 # 8是冗余校验
+        except Exception as exc:
+            print(exc.args)
+        else:
+            pass
+        finally:
+            self.task_num -= 1
+            chunk_list.remove(start_pos)
+
     async def  verify(self):#合并验证
         pass
     async def speed_monitor(self):
