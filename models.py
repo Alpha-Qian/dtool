@@ -52,6 +52,7 @@ class ChunkList:
                 return i
         raise KeyError('cannot find the end_pos')
 
+
     def add (self,start_pos:int):
         '''add a new task'''
         for i in range(len(self)):
@@ -87,6 +88,12 @@ class ChunkList:
                 chunks.append( Chunk( self[i].end, self[i+1].start, False ) )
         return chunks
 
+    def len_working_chunk(self) -> int:
+        length = 0
+        for i in self:
+            if i.state == True:
+                length += 1
+        return length
 
 class TaskList:
     __slots__ = ('_list',)

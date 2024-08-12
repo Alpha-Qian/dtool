@@ -4,27 +4,7 @@ from asyncio import Event,Lock
 import pathlib
 import pickle
 import time
-from models import PosList,ChunkList,monitor
-
-client = httpx.AsyncClient()
-tasks = []
-result = []
-Path =''
-
-asyncio.Semaphore
-asyncio.TaskGroup
-aiofiles.open()
-httpx.AsyncClient().stream
-async def test():
-    client= httpx.AsyncClient()
-    aiofiles.open('')
-    async with client.stream('','') as a:
-        a
-        async for i in a.aiter_bytes():
-            pass
-    a =await client.stream('','').__aenter__()
-    a.aiter_bytes()
-    
+from models import PosList,ChunkList,monitor,Chunk,TaskList
 
 class DownControler:#改为多文件下载控制
     '''self.max_connect'''
@@ -90,56 +70,29 @@ class DownFile:
         self.file_size = None
         self.downed_size = 0
         self.speed = 0
+        self.task_num = 0
 
         self.chunk_list = ChunkList()
         self.task_group :list[asyncio.Task]= []
 
         self.filelock = Lock()
+        self.get_head =Event()
         self.start = Event()
         self.stop = Event()
         self.dumps = Event()
 
     async def download(self,targt_task_num,auto = True):
-        if len(self.task_group) < targt_task_num:
-            self.create_task(self.load_balance())
-        if auto:
-            pass
         self.file = await self.file_cro
+        async with asyncio.TaskGroup() as tg:
+            tg.create_task(self.down_block(save_info = True))
+            await self.get_head.wait()
+            if self.accept_range == True:
+                while self.downed_size < self.file_size:
+                    if self.task_num < targt_task_num:
+                        tg.create_task(self.down_block( self.load_balance() ))
+                    
+
         self.file.close()
-
-    async def down_control(self):
-        await self.start.wait()
-        speed_list :list[int:'max_speed']= [] 
-        if not self.accept_range:
-            return
-        for i in range(len(self.task_group)):
-            asyncio.sleep(0.5)
-            if self.task_group[i].done():
-                del self.task_group[i]
-            if len(speed_list) < len(self.task_group):
-                speed_list.append(0)8
-            speed_list[ len(self.task_group) ] =
-            if self.downed_size < self.file_size:
-                asyncio.create_task(self.down_block( self.load_balance()))
-                
-    def speed_monitor(self):
-        times = []
-        sizes = []
-        while True:
-            size = yield
-            t=time.time()
-
-            sizes.append()
-            times.append(time.time())
-
-            length = len(self.task_group)
-            if len(sizes) > length:
-                sizes.pop(0)
-                times.pop(0)
-            yield sum(sizes) / time.time() - times[0]            
-
-            
-        
 
         
 
@@ -158,65 +111,58 @@ class DownFile:
             return ( biggest_chunk.start + biggest_chunk.end ) // 2
         else:
             return biggest_chunk.start     
-
+    
     def save_info(self,headers):#存在问题
         self.headers=headers
         self.file_size = int(headers['content-length'])#####
-        self.start_list.add(self.file_size)
         self.accept_range = 'accept-ranges' in headers
-        self.start.set()
+        self.get_head.set()
 
     async def down_block(self,start_pos = 0,/,save_info = False):
-        self.task_group.append(asyncio.current_task())
+        self.task_num += 1
+        try:
+            self.task_group.append(asyncio.current_task())
+            chunk_list = self.chunk_list
+            chunk_list.add(start_pos)
+            process = start_pos
+            headers = {"Range": f"bytes={start_pos}-{self.file_size-1}"}
+            async with self.client.stream('GET',self.url,headers = headers) as response:
+                if save_info:
+                    self.save_info(headers)
 
-        chunk_list = self.chunk_list
-        chunk_list.add(start_pos)
+                stop_pos = self.file_size#defaut stop_pos
+                task_finish = False
+                t0 = time.time()
 
-        process = start_pos
-
-        headers = {"Range": f"bytes={start_pos}-{self.file_size-1}"}
-        async with self.client.stream('GET',self.url,headers = headers) as response:
-
-            if save_info:
-                if await self.save_info(response.headers):
-                    asyncio.create_task(self.down_control)
-            stop_pos = self.file_size#defaut stop_pos
-
-            task_finish = False
-            t0 = time.time()
-            async for chunk in response.aiter_bytes():   #<--待修改以避免丢弃多余的内容
-                len_chunk = len(chunk)
-                t1 = time.time()
-                speed = len_chunk / (t1-t0)#在DownChunk中实现
-                t0 = t1
-                self.downloading.wait()
-                
-
-                for i in chunk_list:
-                    if start_pos < i[0] < stop_pos:
-                        stop_pos = i[0]
-                
-                if process + len_chunk > stop_pos:
-                    task_finish = True
-                    chunk = chunk[: stop_pos - process]
+                len_stream = 16384
+                async for chunk in response.aiter_bytes(len_stream):   #<--待修改以避免丢弃多余的内容
                     len_chunk = len(chunk)
-                                
-                async with self.filelock:
-                    await self.file.seek(process)
-                    await self.file.write(chunk)
-                
-                process += len_chunk
-                chunk_list.record(process,len_chunk)
-                self.downed_size += len_chunk
-                
-                if task_finish:
-                    chunk_list.remove(start_pos)
-                    break
-                elif stop_pos - process < len_chunk:
-                    pass
+                    for i in chunk_list:
+                        if start_pos < i.start < stop_pos:
+                            stop_pos = i.start
+                    if process + len_chunk > stop_pos:
+                        chunk = chunk[: stop_pos - process]
+                        len_chunk = len(chunk)
+                    
+                    async with self.filelock:
+                        await self.file.seek(process)
+                        await self.file.write(chunk)
+                    process += len_chunk
+                    chunk_list.record(process,len_chunk)
+                    self.downed_size += len_chunk
+                    
+                    if stop_pos - process < len_stream:
+                        len_stream = stop_pos - process + 8 # 8是冗余校验
+        except Exception as exc:
+            print(exc.args)
+        else:
+            pass
+        finally:
+            self.task_num -= 1
+            chunk_list.remove(start_pos)
     
     async def get_info(self):
-        async with client.stream('HEAD',self.url) as response:
+        async with self.client.stream('HEAD',self.url) as response:
             self.save_info(response)
     
     async def stop(self):
@@ -242,9 +188,11 @@ class DownFile:
 
 class DownBlocks:
     def __init__(self,task) -> None:
-        self.task_list = []
+
     async def new(self,task):
         self.tasks.append(task)
+        pass
+    async def  verify(self):#合并验证
         pass
     async def speed_monitor(self):
         pass
