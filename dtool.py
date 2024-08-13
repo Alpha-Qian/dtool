@@ -1,4 +1,5 @@
 import aiofiles
+import aiofiles.base
 import asyncio, httpx, aiofiles
 from asyncio import Event,Lock
 import pathlib
@@ -69,32 +70,19 @@ class DownFile:
         self.accept_range = None
         self.file_size = None
         self.downed_size = 0
-        self.speed = 0
-        self.task_num = 0
+        self.block_list = []
 
-        self.chunk_list = ChunkList()
-        self.task_group :list[asyncio.Task]= []
-
-        self.filelock = Lock()
-        self.get_head =Event()
-        self.start = Event()
-        self.stop = Event()
-        self.dumps = Event()
 
     async def download(self,targt_task_num,auto = True):
         self.file = await self.file_cro
-        async with asyncio.TaskGroup() as tg:
-            tg.create_task(self.down_block(save_info = True))
-            await self.get_head.wait()
-            if self.accept_range == True:
-                while self.downed_size < self.file_size:
-                    if self.task_num < targt_task_num:
-                        tg.create_task(self.down_block( self.load_balance() ))
+        self.new_block(0)
                     
 
         self.file.close()
 
-        
+    async def new_block(self,start):
+        block = DownBlocks(self.url,self.file,start)
+        return block
 
     def load_balance(self):        #负载均衡
         chunk_list = self.chunk_list
@@ -118,49 +106,6 @@ class DownFile:
         self.accept_range = 'accept-ranges' in headers
         self.get_head.set()
 
-    async def down_block(self,start_pos = 0,/,save_info = False):
-        self.task_num += 1
-        try:
-            self.task_group.append(asyncio.current_task())
-            chunk_list = self.chunk_list
-            chunk_list.add(start_pos)
-            process = start_pos
-            headers = {"Range": f"bytes={start_pos}-{self.file_size-1}"}
-            async with self.client.stream('GET',self.url,headers = headers) as response:
-                if save_info:
-                    self.save_info(headers)
-
-                stop_pos = self.file_size#defaut stop_pos
-                task_finish = False
-                t0 = time.time()
-
-                len_stream = 16384
-                async for chunk in response.aiter_bytes(len_stream):   #<--待修改以避免丢弃多余的内容
-                    len_chunk = len(chunk)
-                    for i in chunk_list:
-                        if start_pos < i.start < stop_pos:
-                            stop_pos = i.start
-                    if process + len_chunk > stop_pos:
-                        chunk = chunk[: stop_pos - process]
-                        len_chunk = len(chunk)
-                    
-                    async with self.filelock:
-                        await self.file.seek(process)
-                        await self.file.write(chunk)
-                    process += len_chunk
-                    chunk_list.record(process,len_chunk)
-                    self.downed_size += len_chunk
-                    
-                    if stop_pos - process < len_stream:
-                        len_stream = stop_pos - process + 8 # 8是冗余校验
-        except Exception as exc:
-            print(exc.args)
-        else:
-            pass
-        finally:
-            self.task_num -= 1
-            chunk_list.remove(start_pos)
-    
     async def get_info(self):
         async with self.client.stream('HEAD',self.url) as response:
             self.save_info(response)
@@ -187,58 +132,50 @@ class DownFile:
 
 
 class DownBlocks:
-    def __init__(self,url,file,start,end):
+    client = httpx.AsyncClient()
+    async def __init__(self,url,file,start,end):
         self.url = url
-        self.file = file
+        self.file = open('','')
+        self.file_size = 0
         self.start = start
         self.end = end
         self.process = start
-    async def run(self):
-        self.task_num += 1
+        self.done = False
+        self.filelock =Lock()#
+    async def run(self,):
         try:
-            self.task_group.append(asyncio.current_task())
-            chunk_list = self.chunk_list
-            chunk_list.add(start_pos)
-            process = start_pos
-            headers = {"Range": f"bytes={start_pos}-{self.file_size-1}"}
+            self.task = asyncio.current_task()
+            headers = {"Range": f"bytes={self.start}-{self.file_size-1}"}
             async with self.client.stream('GET',self.url,headers = headers) as response:
-                if save_info:
-                    self.save_info(headers)
-
-                stop_pos = self.file_size#defaut stop_pos
-                task_finish = False
-                t0 = time.time()
-
                 len_stream = 16384
                 async for chunk in response.aiter_bytes(len_stream):   #<--待修改以避免丢弃多余的内容
                     len_chunk = len(chunk)
-                    for i in chunk_list:
-                        if start_pos < i.start < stop_pos:
-                            stop_pos = i.start
-                    if process + len_chunk > stop_pos:
-                        chunk = chunk[: stop_pos - process]
+
+                    if self.process + len_chunk > self.end:
+                        chunk = chunk[: self.end - self.process]
                         len_chunk = len(chunk)
-                    
+                        async with self.filelock:
+                            await self.file.seek(self.end)
+                            i = await self.file.read(8)
+                        if i != chunk[self.end - self.process:]:
+                            raise Exception('校验失败')
+
+
+
                     async with self.filelock:
-                        await self.file.seek(process)
+                        await self.file.seek(self.process)
                         await self.file.write(chunk)
-                    process += len_chunk
-                    chunk_list.record(process,len_chunk)
-                    self.downed_size += len_chunk
+                    self.process += len_chunk
                     
-                    if stop_pos - process < len_stream:
-                        len_stream = stop_pos - process + 8 # 8是冗余校验
+                    if self.end - self.process < len_stream:
+                        len_stream = self.end - self.process + 8 # 8是冗余校验
         except Exception as exc:
-            print(exc.args)
+            pass
         else:
             pass
         finally:
-            self.task_num -= 1
-            chunk_list.remove(start_pos)
-
+            self.done = True
     async def  verify(self):#合并验证
-        pass
-    async def speed_monitor(self):
         pass
     async def stop(self):
         self.task.cancel()
