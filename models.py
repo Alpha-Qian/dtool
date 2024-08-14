@@ -22,6 +22,14 @@ class Chunk:
                 return self.state
         raise KeyError()
         
+class TaskChunk:
+    def __init__(self,start,end,task) -> None:
+        self.start = start
+        self.end = end
+        self.task = task
+
+
+
 
 class ChunkList:
     '''list[ Chunk(start, process, plan_state:bool),* ]'''

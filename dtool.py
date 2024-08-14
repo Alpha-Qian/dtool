@@ -65,7 +65,6 @@ class DownFile:
         self.path = path
         self.filename = url.split('/')[-1]
 
-        self.file_cro = aiofiles.open(self.filename,'wb')
         self.accept_range = None
         self.file_size = None
         self.downed_size = 0
@@ -78,18 +77,10 @@ class DownFile:
         self.filelock = Lock()
         self.get_head =Event()
         self.start = Event()
-        self.stop = Event()
-        self.dumps = Event()
 
     async def download(self,targt_task_num,auto = True):
-        self.file = await self.file_cro
-        async with asyncio.TaskGroup() as tg:
-            tg.create_task(self.down_block(save_info = True))
-            await self.get_head.wait()
-            if self.accept_range == True:
-                while self.downed_size < self.file_size:
-                    if self.task_num < targt_task_num:
-                        tg.create_task(self.down_block( self.load_balance() ))
+        self.file = await aiofiles.open(self.filename,'w+b')
+    
                     
 
         self.file.close()
@@ -118,7 +109,7 @@ class DownFile:
         self.accept_range = 'accept-ranges' in headers
         self.get_head.set()
 
-    async def down_block(self,start_pos = 0,/,save_info = False):
+    async def down_block(self,start_pos = 0,chunk:Chunk,/,save_info = False):
         self.task_num += 1
         try:
             self.task_group.append(asyncio.current_task())
@@ -164,25 +155,7 @@ class DownFile:
     async def get_info(self):
         async with self.client.stream('HEAD',self.url) as response:
             self.save_info(response)
-    
-    async def stop(self):
-        for i in self.task_group._task:
-            i.cancel()
-    
-    async def dumps(self):
-        await self.stop()
-        chunk_list = self.chunk_list
-        chunk_list.file_name = self.filename
-        return pickle.dumps(self)
-   
-    @classmethod
-    async def loads(cls,data):
-        return pickle.loads(data)
-    
-        obj = pickle.loads(data)
-        if type(obj) != cls:
-            raise Exception
-        return obj
+
 
 
 
