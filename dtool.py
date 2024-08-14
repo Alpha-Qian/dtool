@@ -66,23 +66,31 @@ class DownFile:
         self.path = path
         self.filename = url.split('/')[-1]
 
-        self.file_cro = aiofiles.open(self.filename,'w+b')# w+b:覆盖读写，会清除数据 r+b:插入读写
         self.accept_range = None
         self.file_size = None
         self.downed_size = 0
-        self.block_list = []
+        self.task_list = []
 
 
-    async def download(self,targt_task_num,auto = True):
-        self.file = await self.file_cro
-        self.new_block(0)
+    async def download(self,targt_task_num = 1,auto = True):
+        self.file = await aiofiles.open(self.filename,'w+b')# w+b:覆盖读写，会清除数据 r+b:插入读写
+        event = Event()
+        task = self.new_task(0,event)
+        event.wait()
+        self.save_info(task.head)
+        if self.accept_range:
+            targt_task_num = 1
+            auto = False
+        
+
                     
 
         self.file.close()
-
-    async def new_block(self,start):
-        block = DownBlocks(self.url,self.file,start)
+    async def new_task(self,start,save_event = None):
+        block = DownBlocks(self.url,self.file,start,save_event = None)
+        block.run()
         return block
+
 
     def load_balance(self):        #负载均衡
         chunk_list = self.chunk_list
@@ -135,22 +143,25 @@ class DownBlocks:
     client = httpx.AsyncClient()
     async def __init__(self,url,file,start,end):
         self.url = url
-        self.file = open('','')
-        self.file_size = 0
+        self.file = file
         self.start = start
         self.end = end
         self.process = start
         self.done = False
-        self.filelock =Lock()#
-    async def run(self,):
+        self.filelock =Lock()
+
+    async def run(self,get_head = None):
+        self.done = False
         try:
             self.task = asyncio.current_task()
             headers = {"Range": f"bytes={self.start}-{self.file_size-1}"}
             async with self.client.stream('GET',self.url,headers = headers) as response:
                 len_stream = 16384
+                if get_head is not None:
+                    self.head = response.headers
+                    get_head.set()
                 async for chunk in response.aiter_bytes(len_stream):   #<--待修改以避免丢弃多余的内容
                     len_chunk = len(chunk)
-
                     if self.process + len_chunk > self.end:
                         chunk = chunk[: self.end - self.process]
                         len_chunk = len(chunk)
@@ -175,8 +186,7 @@ class DownBlocks:
             pass
         finally:
             self.done = True
-    async def  verify(self):#合并验证
-        pass
+
     async def stop(self):
         self.task.cancel()
 
