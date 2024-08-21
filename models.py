@@ -1,8 +1,9 @@
 import asyncio,httpx,aiofiles
 from asyncio import Task
 import dtool
+import time
 
-class Chunk:
+class Block:
     __slots__ = ('start','end','state')
     def __init__(self, start_pos:int, end_pos:int, state:bool = False) -> None:
         self.start = start_pos
@@ -23,13 +24,13 @@ class Chunk:
         raise KeyError()
         
 
-class ChunkList:
+class BlockList:
     '''list[ Chunk(start, process, plan_state:bool),* ]'''
     __slots__ = ('_list','file_size')
 
     def __init__(self,file_size) -> None:
         self.file_size = file_size
-        self._list :list[ Chunk ]= []
+        self._list :list[Block]= []
 
     def __len__(self):
         return len(self._list)
@@ -37,16 +38,16 @@ class ChunkList:
     def __iter__(self):
         return iter(self._list)
     
-    def __getitem__(self,key) -> Chunk:
-        return self._list[key] if key < len(self) else Chunk(self.file_size, None, None)
+    def __getitem__(self,key) -> Block:
+        return self._list[key] if key < len(self) else Block(self.file_size, None, None)
     
-    def start_index(self, start_pos:int) -> int['index']:
+    def start_index(self, start_pos:int) -> int:
         for i in range(len(self)):
             if self[i].start == start_pos:
                 return i
         raise KeyError('cannot find the start_pos')
 
-    def end_index(self, end_pos:int) -> int['index']:
+    def end_index(self, end_pos:int) -> int:
         for i in range(len(self)):
             if self[i].end == end_pos:
                 return i
@@ -57,9 +58,9 @@ class ChunkList:
         '''add a new task'''
         for i in range(len(self)):
             if start_pos < self[i].start:
-                self._list.insert( Chunk(start_pos, start_pos, True) )
+                self._list.insert( Block(start_pos, start_pos, True) )
                 return
-        self._list.append( Chunk(start_pos, start_pos, True) )
+        self._list.append( Block(start_pos, start_pos, True) )
     
     def record(self, stat_pos, mov_len):
         self[self.start_index(stat_pos)].end += mov_len
@@ -69,23 +70,23 @@ class ChunkList:
         self._list[self.start_index(start_pos)].state = False
 
     
-    def empty_chunk(self) -> list[Chunk]:
+    def empty_chunk(self) -> list[Block]:
         chunks = []
         for i in range(len(self)):
-            chunks.append( Chunk( self[i].end, self[i+1].start, self[i].state ))
+            chunks.append( Block( self[i].end, self[i+1].start, self[i].state ))
     
-    def unfinish_chunk(self) -> list[Chunk]:
+    def unfinish_chunk(self) -> list[Block]:
         chunks = []
         for i in range(len(self)):
             if self[i].state == True:
-                chunks.append( Chunk( self[i].end, self[i+1].start,True ) )#   允许self[i+1]原因见__getitem__
+                chunks.append( Block( self[i].end, self[i+1].start,True ) )#   允许self[i+1]原因见__getitem__
         return chunks
     
-    def unplan_chunk(self) -> list[Chunk]:
+    def unplan_chunk(self) -> list[Block]:
         chunks = []
         for i in range(len(self)):
             if self[i].state == False:
-                chunks.append( Chunk( self[i].end, self[i+1].start, False ) )
+                chunks.append( Block( self[i].end, self[i+1].start, False ) )
         return chunks
 
     def len_working_chunk(self) -> int:
@@ -132,11 +133,72 @@ class TaskList:
         
 
 
-class FileInfo:
-    pass
+class SpeedMonitor:
+    def __init__(self,mission:dtool.DownloadFile) -> None:
+        self.mission = mission
+        self.process = mission.process
+        self.time = time.time()
+    
+    def __next__(self):
+        old_process = self.process
+        old_time = self.time
+        self.process = self.mission.process
+        self.time = time.time()
+        print(self.time,old_time)
+        return (self.process - old_process) / (self.time - old_time)
+    
+    def reset(self,):
+        self.process = self.mission.process
+        self.time = time.time()
+
+    def get(self):
+        return (self.mission.process - self.process) / (time.time() - self.time)
+    
+    async def aget(self,second:int = 1):
+        process = self.mission.process
+        t = time.time()
+        asyncio.sleep(second)
+        return (self.mission.process - process)/(time.time()-t)
 
 
+class SpeedStatis:
+    def __init__(self,mission:dtool.DownloadFile) -> None:
+        self.list :list[int]=[]
+        self.monitor = SpeedMonitor(mission)
+        self.num = 1
+    def reset(self):
+        self.list :list[int] = []
+        self.monitor.reset()
+        self.num = 1
+    def change(self,num:int):
+        speed = next(self.monitor)
+        if num > len(self.list):
+            self.list += [0] * (num - len(self.list))
+        self.list[self.num] = speed
+    def check(self) -> bool:
+        if self.list[self.num]/self.num *0.1 > self.list[self.num] - self.list[self.num - 1]:
+            return True
+        else:
+            return False
 
+
+class TaskCoordinator:
+    def __init__(self) -> None:
+        self._enter = asyncio.Lock()
+        self._exit = asyncio.Lock()
+        self._enter._locked = True #在unlock中释放，在enter中获取
+        self._exit._locked = True #在exit中释放,在unlock中获取
+
+    async def unlock(self):
+        self._enter.release()
+        await self._exit.acquire()
+
+    async def __aenter__(self):
+        await self._enter.acquire()
+
+    async def __aexit__(self,exc,excv,track):
+        self._exit.release()
+        
 
 class PosList:          #已弃用
     def __init__(self,/,*arg,**kwarg):
