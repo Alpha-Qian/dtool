@@ -129,9 +129,6 @@ class TaskList:
     def add(self,task:Task):
         self._list.append(task)
 
-    
-        
-
 
 class SpeedMonitor:
     def __init__(self,mission:dtool.DownloadFile) -> None:
@@ -144,21 +141,48 @@ class SpeedMonitor:
         old_time = self.time
         self.process = self.mission.process
         self.time = time.time()
-        print(self.time,old_time)
-        return (self.process - old_process) / (self.time - old_time)
+        return (self.process - old_process) / (self.time - old_time) 
     
     def reset(self,):
         self.process = self.mission.process
         self.time = time.time()
 
     def get(self):
+        time.sleep(1)
         return (self.mission.process - self.process) / (time.time() - self.time)
     
     async def aget(self,second:int = 1):
         process = self.mission.process
         t = time.time()
-        asyncio.sleep(second)
+        await asyncio.sleep(second)
         return (self.mission.process - process)/(time.time()-t)
+
+class SpeedCacher:
+    def __init__(self,mission,block_num=0) -> None:
+        self.speed = 0
+        self.old_speed = 0
+        self.change_num:int = block_num
+        self.mission:dtool.DownloadFile = mission
+        self.monitor = SpeedMonitor(mission)
+        self.max_speed_per_thread = 0
+    def reset(self,block_num):
+        self.speed = 0
+        self.old_speed = 0
+        self.max_speed_per_thread = 0
+        self.change_num = block_num
+
+    def change(self,change_num:int = 1):
+        if change_num != 0:
+            self.old_speed = self.speed
+            self.change_num = change_num
+
+    def get(self):
+        self.speed = next(self.monitor)
+        if (i := self.speed/self.mission.task_num) > self.max_speed_per_thread:
+            self.max_speed_per_thread = i
+        return (self.speed - self.old_speed) / self.change_num /self.max_speed_per_thread
+
+
 
 
 class SpeedStatis:
@@ -189,17 +213,31 @@ class TaskCoordinator:
         self._enter._locked = True #在unlock中释放，在enter中获取
         self._exit._locked = True #在exit中释放,在unlock中获取
 
-    async def unlock(self):
-        self._enter.release()
-        await self._exit.acquire()
-
     async def __aenter__(self):
         await self._enter.acquire()
 
     async def __aexit__(self,exc,excv,track):
         self._exit.release()
+
+    async def unlock(self):
+        self._enter.release()
+        await self._exit.acquire()
+
+    def enter(self):
+        return self.__aenter__()
+    def exit(self,exc=None,excv=None,track=None):
+        return self.__aexit__(exc,excv,track)
         
 
+class EmptyBlock:
+    __slot__=('process', 'end')
+    def __init__(self, process, end) -> None:
+        self.process = process
+        self.end = end
+    def __repr__(self) -> str:
+        return f'EmptyBlock({self.process},{self.end})'
+    def __eq__(self, value) -> bool:
+        return self.process == value.process and self.end == value.end 
 class PosList:          #已弃用
     def __init__(self,/,*arg,**kwarg):
         self._list = []
@@ -249,13 +287,8 @@ class monitor:
     async def __aexit__(self):
         await self.task
 
-def repr(bytes):
-    pass
-
-
-
-
-class PosInf:
-    pass
-class NegInf:
-    pass
+class MatePoint(type):
+    def __getattribute__(cls, name: str):
+        def method(self,*arg):
+            super().__getattribute__(name)()
+        return super().__getattribute__(name)
