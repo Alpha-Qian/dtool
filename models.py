@@ -2,6 +2,7 @@ import asyncio,httpx,aiofiles
 from asyncio import Task
 import dtool
 import time
+import io
 
 class Block:
     __slots__ = ('start','end','state')
@@ -22,7 +23,86 @@ class Block:
             case 2:
                 return self.state
         raise KeyError()
+
+class StreamGetter:
+    def __init__(self,step) -> None:
+        self.step = step
+        self.process = 0
+        self.speed_monitor = SpeedMonitor(self)
+    async def __anext__(self):
+        self.process += self.step
+        next(self.speed_monitor)
+
+class IoWriter:
+    '将IO'
+    def __init__(self,io :io.IOBase) -> None:
+        self.io = io
+    def __getitem__(self,key:int|slice):
+        self.io.seek(key.start)
+        return self.io.read(key.stop - key.start)
+    def __setitem__(self,key:int|slice,value):
+        self.io.seek(key.start)
+        self.io.
+    def __delitem__(self:int|slice,key):
+        pass
+
+
+class DataChunk():
+    __slot__ = ('start','end','data')
+    def __init__(self,start_pos) -> None:
+        self.start = start_pos
+        self.end = start_pos
+    def __len__(self):
+        return self.end - self.start
+    def seek(self):
+        pass
+    def write(self):
+        pass
+
+class DataList():#模拟文件，记录写入信息
+    def __init__(self):
+        self._offset = 0
+        self._list:list[DataChunk] = [] #[(0:start,1:end,2:data)*]
+        self.insert_chunk = None
+        self.seek(0)
+    def __len__(self):
+        pass
+    def seek(self,offset:int):
+        self._offset = offset
+        for i in self._list:
+            if offset < i.end:
+                if i.start < offset:
+                    self.insert_chunk = i
+                else:
+                    self._list.insert((new_chunk:=DataChunk(offset)),self._list.index(i))
+                    self.insert_chunk = new_chunk
+                return
+        self._list.append(( new_chunk:=DataChunk(offset) ))
+        self.insert_chunk = new_chunk
         
+    def wirte(self,data:bytes):
+        len_data = len(data)
+        if self._offset
+    def truncate(self,size = -1):
+        pass
+        
+    def __iter__(self):
+        return DataIter(self)
+    def __next__(self):
+        return self._list.pop(0)
+
+class DataIter:
+    def __init__(self,data:DataList) -> None:
+        self.data_list = data
+        self.offset = 0
+        self.buffer=bytearray()
+    def __next__(self):
+        self.data_list
+        
+
+        
+
+
 class TaskChunk:
     def __init__(self,start,end,task) -> None:
         self.start = start
@@ -139,7 +219,7 @@ class TaskList:
 
 
 class SpeedMonitor:
-    def __init__(self,mission:dtool.DownloadFile) -> None:
+    def __init__(self,mission:dtool.DownloadIO) -> None:
         self.mission = mission
         self.process = mission.process
         self.time = time.time()
@@ -159,6 +239,10 @@ class SpeedMonitor:
         time.sleep(1)
         return (self.mission.process - self.process) / (time.time() - self.time)
     
+    def info(self) -> tuple:
+        t = time.time()
+        return (self.mission.process - self.process) / (t - self.time), (t - self.time)
+    
     async def aget(self,second:int = 1):
         process = self.mission.process
         t = time.time()
@@ -166,13 +250,15 @@ class SpeedMonitor:
         return (self.mission.process - process)/(time.time()-t)
 
 class SpeedCacher:
-    def __init__(self,mission,block_num=0) -> None:
+    def __init__(self,mission,block_num = 0, threshold = 0.1, accuracy = 0.1) -> None:
         self.speed = 0
         self.old_speed = 0
         self.change_num:int = block_num
-        self.mission:dtool.DownloadFile = mission
+        self.mission:dtool.DownloadIO = mission
         self.monitor = SpeedMonitor(mission)
         self.max_speed_per_thread = 0
+        self.threshold = threshold #判定阈值 >=0 <1 无量纲
+        self.accuracy = accuracy #精确度 >=0 单位为秒 越大越精确但响应更慢 防止短时间内速率波动 除于秒数后等价于判定阈值
     def reset(self,block_num):
         self.speed = 0
         self.old_speed = 0
@@ -181,37 +267,25 @@ class SpeedCacher:
 
     def change(self,change_num:int = 1):
         if change_num != 0:
+            self.monitor.reset()
             self.old_speed = self.speed
             self.change_num = change_num
 
-    def get(self):
+    def get(self):#old
         self.speed = next(self.monitor)
         if (i := self.speed/self.mission.task_num) > self.max_speed_per_thread:
             self.max_speed_per_thread = i
         return (self.speed - self.old_speed) / self.change_num /self.max_speed_per_thread
+    
+    def check(self) -> bool:#new
+        self.speed, secend = self.monitor.info()
+        if (i := self.speed/self.mission.task_num) > self.max_speed_per_thread:
+            self.max_speed_per_thread = i
+        if secend > 60:
+            self.monitor.reset
+        return ((self.speed - self.old_speed) / self.change_num /self.max_speed_per_thread - self.threshold) > self.accuracy/secend
 
 
-
-
-class SpeedStatis:
-    def __init__(self,mission:dtool.DownloadFile) -> None:
-        self.list :list[int]=[]
-        self.monitor = SpeedMonitor(mission)
-        self.num = 1
-    def reset(self):
-        self.list :list[int] = []
-        self.monitor.reset()
-        self.num = 1
-    def change(self,num:int):
-        speed = next(self.monitor)
-        if num > len(self.list):
-            self.list += [0] * (num - len(self.list))
-        self.list[self.num] = speed
-    def check(self) -> bool:
-        if self.list[self.num]/self.num *0.1 > self.list[self.num] - self.list[self.num - 1]:
-            return True
-        else:
-            return False
 
 
 class TaskCoordinator:
@@ -230,6 +304,9 @@ class TaskCoordinator:
     async def unlock(self):
         self._enter.release()
         await self._exit.acquire()
+    async def confirm(self):
+        await self._enter.acquire()
+        self._exit.release()
 
     def enter(self):
         return self.__aenter__()
