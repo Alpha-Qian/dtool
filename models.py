@@ -5,24 +5,101 @@ import time
 import io
 
 class Block:
-    __slots__ = ('start','end','state')
-    def __init__(self, start_pos:int, end_pos:int, state:bool = False) -> None:
-        self.start = start_pos
+    __slots__ = ('process','end','running')
+    def __init__(self, process:int, end_pos:int, running:bool = False ,) -> None:
+        self.process = process
         self.end = end_pos
-        self.state = state
+        self.running = running
+
     
-    def __len__(self):
-        return self.end - self.start
+
+class BufferBlock(Block):
+    def __init__(self, process: int, end_pos: int, running: bool = False) -> None:
+        super().__init__(process, end_pos, running)
+        self.buffer = bytearray()
+        self.on_wait = False
+def point_method(func):
+    def warper(*arg, **kwarg):
+        self_obj = arg[0]
+        point_obj = self_obj._obj
+        return func(*point_obj+arg[1:] , **kwarg)
+class point(type):
     
-    def __getitem__(self,key) -> int|bool:
-        match key:
-            case 0:
-                return self.start
-            case 1:
-                return self.end
-            case 2:
-                return self.state
-        raise KeyError()
+class CircleIo:
+    def __init__(self,size) -> None:
+        self._size = size
+        self._off = 0
+        self._io = bytearray(size)
+
+    def seek(self, off):
+        self._off = off % self._size
+
+    def write(self, data):
+        size = len(data)
+        if size > self._size:
+            raise ValueError
+        if size + self._off < self._size:
+            self._io[self._off : self._off + size] = data
+            self._off += size
+        else:
+            self._io[self._off: ] = data[ :self._size - self._off]
+            self._io[ :self._off + size - self._size] = data[self._size - self._off: ]
+            self._off += size - self._size
+
+    def read(self, size):
+        if size > self._size:
+            raise ValueError
+        if size
+    async def pop(self):
+
+        
+    
+    def read(self, size):
+        return self._io[self._off]
+
+    def tell(self):
+        return self._io.tell()
+
+
+class CircleStream():
+    def __init__(self, size) -> None:
+        self.size = size
+        self._start = 0
+        self._end = self._start + size
+        self.data = bytearray(size)
+    @property
+    def start(self):
+        return self._start
+    @start.setter()
+    def setter(self, value):
+        self._start += value
+        self._end += value
+    
+    @property
+    def end(self):
+        return self._end
+
+    
+    async def seek_and_write(self, pos, data):
+        size = len(data)
+        if size > self.size:
+            raise ValueError
+        if self.start == pos:
+            self.start += size
+        pos = pos % self.size
+        if pos + size < self.size:
+            self.data[pos:pos + size] = data
+        else:
+            self.data[pos: self.size] = data[:self.size - ]
+
+
+        
+    async def __anext__(self):
+        pass
+    async def __aiter__(self):
+        return self
+    
+    async def pop(self)
 
 class StreamGetter:
     def __init__(self,step) -> None:
@@ -155,32 +232,32 @@ class BlockList:
         
     def remove(self,start_pos):
         '''called when task remove'''
-        self._list[self.start_index(start_pos)].state = False
+        self._list[self.start_index(start_pos)].running = False
 
     
     def empty_chunk(self) -> list[Block]:
         chunks = []
         for i in range(len(self)):
-            chunks.append( Block( self[i].end, self[i+1].start, self[i].state ))
+            chunks.append( Block( self[i].end, self[i+1].start, self[i].running ))
     
     def unfinish_chunk(self) -> list[Block]:
         chunks = []
         for i in range(len(self)):
-            if self[i].state == True:
+            if self[i].running == True:
                 chunks.append( Block( self[i].end, self[i+1].start,True ) )#   允许self[i+1]原因见__getitem__
         return chunks
     
     def unplan_chunk(self) -> list[Block]:
         chunks = []
         for i in range(len(self)):
-            if self[i].state == False:
+            if self[i].running == False:
                 chunks.append( Block( self[i].end, self[i+1].start, False ) )
         return chunks
 
     def len_working_chunk(self) -> int:
         length = 0
         for i in self:
-            if i.state == True:
+            if i.running == True:
                 length += 1
         return length
 
@@ -250,6 +327,7 @@ class SpeedMonitor:
         return (self.mission.process - process)/(time.time()-t)
 
 class SpeedCacher:
+
     def __init__(self,mission,block_num = 0, threshold = 0.1, accuracy = 0.1) -> None:
         self.speed = 0
         self.old_speed = 0
@@ -259,6 +337,7 @@ class SpeedCacher:
         self.max_speed_per_thread = 0
         self.threshold = threshold #判定阈值 >=0 <1 无量纲
         self.accuracy = accuracy #精确度 >=0 单位为秒 越大越精确但响应更慢 防止短时间内速率波动 除于秒数后等价于判定阈值
+
     def reset(self,block_num):
         self.speed = 0
         self.old_speed = 0
@@ -271,6 +350,15 @@ class SpeedCacher:
             self.old_speed = self.speed
             self.change_num = change_num
 
+    def new_connect(self):
+        if self.check:
+            self.mission.re_divition_task()
+            self.change()
+
+    def get_speed(self):
+        self.speed = next(self.monitor)
+        return (self.speed - self.old_speed) / self.change_num
+    
     def get(self):#old
         self.speed = next(self.monitor)
         if (i := self.speed/self.mission.task_num) > self.max_speed_per_thread:
@@ -282,7 +370,7 @@ class SpeedCacher:
         if (i := self.speed/self.mission.task_num) > self.max_speed_per_thread:
             self.max_speed_per_thread = i
         if secend > 60:
-            self.monitor.reset
+            self.monitor.reset()
         return ((self.speed - self.old_speed) / self.change_num /self.max_speed_per_thread - self.threshold) > self.accuracy/secend
 
 
@@ -304,6 +392,7 @@ class TaskCoordinator:
     async def unlock(self):
         self._enter.release()
         await self._exit.acquire()
+    
     async def confirm(self):
         await self._enter.acquire()
         self._exit.release()

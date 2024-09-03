@@ -4,7 +4,7 @@ import aiofiles.base
 import asyncio, httpx, aiofiles
 from asyncio import Event,Lock
 import models
-
+httpx.Client
 
 class DownloadControl:
     def __init__(self, url,pre_task_num = 1, auto= True) -> None:
@@ -35,6 +35,22 @@ class DownloadControl:
         if self.speed == 0:
             return 1145141919810
         return (self.file_size - self.process)/self.speed
+
+class Mission:
+    def __init__(self) -> None:
+        self.pending_tasks = []
+        self.loop = asyncio.get_event_loop()
+    def run(self):
+        self.loop.run_in_executor()
+    async def main(self):
+        async with asyncio.TaskGroup as tg:
+            asyncio.sleep(0)
+    def new_task_threadsafe(self, url):
+        self.loop.call_soon_threadsafe(self.new_task(url))
+    def new_task(self, url):
+        self.loop.create_task(DownloadFile(url).main())
+
+
 
 class DownloadFile:
     client = httpx.AsyncClient()
@@ -90,28 +106,8 @@ class DownloadFile:
         else:
             max_remain_Block()
             self.speed_cache.change()
-    def re_division(self,start,end):
-        max_remain = 0
-        cut_block = True
-        for i in self.task_list:
-            if i.process <= start or i.process >= end:
-                continue
-            elif not i.running and (i.end - i.process)*2 > max_remain:
-                cut_block = False
-                max_remain_Block:DownBlocks = i
-            elif i.end - i.process > max_remain:
-                cut_block = True
-                max_remain = i.end - i.process
-                max_remain_Block:DownBlocks = i
-        if cut_block:
-            if max_remain <= 1048576: #1MB
-                return
-            start_pos = (max_remain_Block.process + max_remain_Block.end) // 2
-            self.cut_block(start_pos)()
-            self.speed_cache.change()
-        else:
-            max_remain_Block()
-            self.speed_cache.change()
+            
+    
 
 
 
@@ -137,7 +133,7 @@ class DownloadFile:
         self.task_list.append(new_block)
         #asyncio.create_task(new_block.run())
         return new_block
-        
+    async def 
         
     async def main(self, pre_task_num = 1, auto = True, max_task_num = 256):
         self.cut_block(0)()
@@ -206,7 +202,7 @@ class DownBlocks():
                 mission.headers = response.headers
                 await mission.download_prepare.unlock()
             
-            async for chunk in response.aiter_raw(16834):   #<--待修改以避免丢弃多余的内容
+            async for chunk in response.aiter_raw(16834):
                 len_chunk = 16834
                 if self.process + len_chunk < self.end:
                     async with mission.file_lock:
@@ -262,10 +258,90 @@ class DownBlocks():
     async def cancel(self):
         self.task.cancel()
 
-class GetBlock(DownBlocks):
-    def run(self):
 
 
+class Stream(DownloadFile):
+    def __init__(self, url, buffing = 16777216 ,step = 16384):#16MB
+        self.url = url
+        self.task_num = 0
+        
+        self.saved_info:bool = False
+        self.download_prepare = models.TaskCoordinator()
+        self.headers = None
+        self.accept_range:bool = None
+        self.file_size = 1
+
+        self.process = 0
+        self.buffing = buffing
+        self.step = step
+
+        self.task_list:list[DownBlocks] = []
+        #self.task_group = asyncio.TaskGroup()
+        
+        self.speed_cache = models.SpeedCacher(self)
+    def cut_block(self, start_pos: int):
+        return super().cut_block(start_pos)
+    
+    def 
+
+
+
+class DownBlocks():
+    client = httpx.AsyncClient()
+
+    def __init__(self, start, end, mission:DownloadFile):
+        self.process = start
+        self.end = end
+        self.mission = mission
+        self.running = False
+        self.buffer = bytearray()
+
+    async def run(self):
+        self.running = True
+        mission = self.mission
+        task_list = mission.task_list
+
+        if mission.saved_info:
+            headers = {"Range": f"bytes={self.process}-{mission.file_size-1}"}
+        else:
+            headers = dict()
+        async with self.client.stream('GET',mission.url,headers = headers) as response:
+            if not mission.saved_info:
+                mission.headers = response.headers
+                await mission.download_prepare.unlock()
+            
+            async for chunk in response.aiter_raw(16834):   #<--待修改以避免丢弃多余的内容
+                len_chunk = 16834
+                if self.process + len_chunk < self.end:
+                    self.buffer += chunk
+                    self.process += len_chunk
+                    mission.process += len_chunk
+                else:
+                    self.buffer += chunk[:self.end - self.process]
+                    self.process = self.end
+                    mission.process += self.end - self.process
+
+    def __call__(self):
+        self.mission.task_num += 1
+        self.running = True
+        self.task = asyncio.create_task(self.run())
+        self.task.add_done_callback(self.call_back)
+
+    def call_back(self,task:asyncio.Task):
+        try:
+            task.result()
+        except httpx._exceptions:
+            print('\t\t\t\tHTTPX ERROR')
+        else:
+            self.mission.task_list.remove(self)
+            self.mission.re_division_task()
+        finally:
+            self.running = False
+            print(f'callback\t{self.mission.task_num - 1}')
+            self.mission.task_num -= 1
+    
+    async def cancel(self):
+        self.task.cancel()
 
 
 
