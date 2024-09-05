@@ -3,13 +3,10 @@ from asyncio import Task
 import dtool
 import time
 import io
+asyncio.TaskGroup
+class UnaccpetRangeError(Exception):
+    pass
 
-class Block:
-    __slots__ = ('process','end','running')
-    def __init__(self, process:int, end_pos:int, running:bool = False ,) -> None:
-        self.process = process
-        self.end = end_pos
-        self.running = running
 
     
 
@@ -23,8 +20,9 @@ def point_method(func):
         self_obj = arg[0]
         point_obj = self_obj._obj
         return func(*point_obj+arg[1:] , **kwarg)
-class point(type):
     
+class point(type):
+    pass
 class CircleIo:
     def __init__(self,size) -> None:
         self._size = size
@@ -49,7 +47,12 @@ class CircleIo:
     def read(self, size):
         if size > self._size:
             raise ValueError
-        if size
+        if size + self._off < self._size:
+            i = bytes(self._io[self._off : self._off + size])
+            self._off += size
+            return i
+        else:
+            i = bytes(self.io)
     async def pop(self):
 
         
@@ -61,12 +64,21 @@ class CircleIo:
         return self._io.tell()
 
 
+
+
 class CircleStream():
-    def __init__(self, size) -> None:
+    def __init__(self, size, block_list:list, step = 1024 ** 2) -> None:
         self.size = size
+        self.block_list = block_list
         self._start = 0
         self._end = self._start + size
-        self.data = bytearray(size)
+        self.step = step
+        self._io = CircleIo(size)
+
+        self.wait_download = asyncio.Event()
+        self.wait_iter = asyncio.Event()
+        self.wait_download.set()
+        self.wait_iter.set()
     @property
     def start(self):
         return self._start
@@ -81,25 +93,70 @@ class CircleStream():
 
     
     async def seek_and_write(self, pos, data):
-        size = len(data)
-        if size > self.size:
-            raise ValueError
-        if self.start == pos:
-            self.start += size
-        pos = pos % self.size
-        if pos + size < self.size:
-            self.data[pos:pos + size] = data
-        else:
-            self.data[pos: self.size] = data[:self.size - ]
+        if pos + len(data) > self.end:
+            self.wait_iter.clear()
+            await self.wait_iter.wait()
 
-
+        self._io.seek(pos)
+        self._io.write(data)
         
+        if self.block_list[0].process > self.start + 1024:
+            self.wait_download.set()
+
     async def __anext__(self):
-        pass
+        if self.start + self.step > self.block_list[0].process:
+            self.wait_download.clear()
+            await self.wait_download.wait()
+        
+        self._io.seek(self.start)
+        i = self._io.read(self.step)
+
+        self.wait_iter.set()
+        self.start += self.step
+        
+        return i
+    
     async def __aiter__(self):
         return self
     
-    async def pop(self)
+
+class CricleFile:
+    def __init__(self) -> None:
+        self._file = aiofiles.tempfile.TemporaryFile('w+b')
+    async def __aenter__(self):
+        return await self
+    async def __await__(self):
+        await self._file
+    async def __aexit__(self):
+        self
+    async def seek(self, off):
+        self.
+
+
+class StreamControl:
+    def __init__(self, block_list) -> None:
+        self.block_list = block_list
+        self.iter_step = 
+        self.download_step = 
+
+        self._wait_download = asyncio.Event()
+        self._wait_iter = asyncio.Event()
+        self._wait_download.set()
+        self._wait_iter.set()
+    async def iter(self, pos):
+        if self.block_list[0].process < self.start:
+            self._wait_download.clear()
+            await self._wait_download.wait()
+        self._wait_iter.set()
+    async def download(self, pos):
+        if self.end < pos:
+            self._wait_iter.clear()
+            await self._wait_iter.wait()
+        else:
+            return
+
+
+
 
 class StreamGetter:
     def __init__(self,step) -> None:
@@ -176,16 +233,6 @@ class DataIter:
     def __next__(self):
         self.data_list
         
-
-        
-
-
-class TaskChunk:
-    def __init__(self,start,end,task) -> None:
-        self.start = start
-        self.end = end
-        self.task = task
-
 
 
 
@@ -296,35 +343,40 @@ class TaskList:
 
 
 class SpeedMonitor:
-    def __init__(self,mission:dtool.DownloadIO) -> None:
-        self.mission = mission
-        self.process = mission.process
+    def __init__(self, mission:dtool.DownloadIO, attr_name = 'process') -> None:
+        self._obj = mission
+        self._attr_name = attr_name
+        self.process_cache = self.process
         self.time = time.time()
+
+    @property
+    def process(self):
+        return getattr(self._obj, self._attr_name)
     
     def __next__(self):
-        old_process = self.process
+        old_process = self.process_cache
         old_time = self.time
-        self.process = self.mission.process
+        self.process_cache = self.process
         self.time = time.time()
-        return (self.process - old_process) / (self.time - old_time) 
+        return (self.process_cache - old_process) / (self.time - old_time) 
     
     def reset(self,):
-        self.process = self.mission.process
+        self.process_cache = self.process
         self.time = time.time()
 
     def get(self):
         time.sleep(1)
-        return (self.mission.process - self.process) / (time.time() - self.time)
+        return (self.process - self.process_cache) / (time.time() - self.time)
     
     def info(self) -> tuple:
         t = time.time()
-        return (self.mission.process - self.process) / (t - self.time), (t - self.time)
+        return (self.process - self.process_cache) / (t - self.time), (t - self.time)
     
     async def aget(self,second:int = 1):
-        process = self.mission.process
+        process = self.process
         t = time.time()
         await asyncio.sleep(second)
-        return (self.mission.process - process)/(time.time()-t)
+        return (self.process - process) / (time.time()-t)
 
 class SpeedCacher:
 
@@ -412,6 +464,7 @@ class EmptyBlock:
         return f'EmptyBlock({self.process},{self.end})'
     def __eq__(self, value) -> bool:
         return self.process == value.process and self.end == value.end 
+    
 class PosList:          #已弃用
     def __init__(self,/,*arg,**kwarg):
         self._list = []
@@ -437,32 +490,5 @@ class PosList:          #已弃用
     def move(self,value,mov):
         self._list[self._list.index(value)] = value + mov
 
-class DownBlock:
-    def __init__(self,url,start_pos,tracker:PosList):
-        self.url=url
-        self.start_pos=start_pos
-    async def start(self):
-        async with httpx.stream('GET',self.url) as response:
-            pass
 
-class monitor:
-    def __init__(self) -> None:
-        self.speed = 0
-    async def monitor(self,obj,speed):
-        list = []
-        obj.downed_size
-        asyncio.sleep(1/speed)
 
-        
-    async def __aenter__(self,obj):
-        self.task = asyncio.create_task(self.monitor(obj))
-        return self
-        
-    async def __aexit__(self):
-        await self.task
-
-class MatePoint(type):
-    def __getattribute__(cls, name: str):
-        def method(self,*arg):
-            super().__getattribute__(name)()
-        return super().__getattribute__(name)
