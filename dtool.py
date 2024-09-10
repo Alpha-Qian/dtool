@@ -133,7 +133,7 @@ class DownloadFile:
         self.task_list.append(new_block)
         #asyncio.create_task(new_block.run())
         return new_block
-    async def 
+
         
     async def main(self, pre_task_num = 1, auto = True, max_task_num = 256):
         self.cut_block(0)()
@@ -282,8 +282,6 @@ class Stream(DownloadFile):
     def cut_block(self, start_pos: int):
         return super().cut_block(start_pos)
     
-    def 
-
 
 
 class DownBlocks():
@@ -308,7 +306,7 @@ class DownBlocks():
         async with self.client.stream('GET',mission.url,headers = headers) as response:
             if not mission.saved_info:
                 mission.headers = response.headers
-                await mission.download_prepare.unlock()
+                await mission.download_prepare.unlock(response)
             
             async for chunk in response.aiter_raw(16834):   #<--待修改以避免丢弃多余的内容
                 len_chunk = 16834

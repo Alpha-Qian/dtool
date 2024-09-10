@@ -3,13 +3,30 @@ from asyncio import Task
 import dtool
 import time
 import io
-asyncio.TaskGroup
+import enum
+import typing
+
+class DataUnit(enum.IntEnum):
+    B = 1
+    KB = 1024
+
+class TimeUnit(enum.IntEnum):
+    s = 1
+    m = 60
+    h = 60 * m
+    d = 24 * h
 class UnaccpetRangeError(Exception):
     pass
 
-
+class SyncRunner:
+    loop = None
+    def sync_run(coro:typing.Coroutine):
+        if not loop:
+            loop = asyncio.get_event_loop()
+        return loop.run_until_complete(coro)
     
-
+    
+from rebuild import Block
 class BufferBlock(Block):
     def __init__(self, process: int, end_pos: int, running: bool = False) -> None:
         super().__init__(process, end_pos, running)
@@ -53,7 +70,6 @@ class CircleIo:
             return i
         else:
             i = bytes(self.io)
-    async def pop(self):
 
         
     
@@ -82,8 +98,8 @@ class CircleStream():
     @property
     def start(self):
         return self._start
-    @start.setter()
-    def setter(self, value):
+    @start.setter
+    def start(self, value):
         self._start += value
         self._end += value
     
@@ -129,15 +145,14 @@ class CricleFile:
         await self._file
     async def __aexit__(self):
         self
-    async def seek(self, off):
-        self.
+
 
 
 class StreamControl:
     def __init__(self, block_list) -> None:
         self.block_list = block_list
-        self.iter_step = 
-        self.download_step = 
+        self.iter_step = 1024
+        self.download_step = 163840
 
         self._wait_download = asyncio.Event()
         self._wait_iter = asyncio.Event()
@@ -176,7 +191,7 @@ class IoWriter:
         return self.io.read(key.stop - key.start)
     def __setitem__(self,key:int|slice,value):
         self.io.seek(key.start)
-        self.io.
+        #self.io.
     def __delitem__(self:int|slice,key):
         pass
 
@@ -216,7 +231,8 @@ class DataList():#模拟文件，记录写入信息
         
     def wirte(self,data:bytes):
         len_data = len(data)
-        if self._offset
+        if self._offset:
+            pass
     def truncate(self,size = -1):
         pass
         
@@ -343,7 +359,7 @@ class TaskList:
 
 
 class SpeedMonitor:
-    def __init__(self, mission:dtool.DownloadIO, attr_name = 'process') -> None:
+    def __init__(self, mission, attr_name = 'process') -> None:
         self._obj = mission
         self._attr_name = attr_name
         self.process_cache = self.process
@@ -444,7 +460,7 @@ class TaskCoordinator:
     async def unlock(self):
         self._enter.release()
         await self._exit.acquire()
-    
+        
     async def confirm(self):
         await self._enter.acquire()
         self._exit.release()
@@ -454,6 +470,41 @@ class TaskCoordinator:
     def exit(self,exc=None,excv=None,track=None):
         return self.__aexit__(exc,excv,track)
         
+
+class Inf:
+    __slot__ = ()
+    def __ne__(self, value: object) -> bool:
+        '''return self == other'''
+        return value is Inf
+    def __gt__(self, other):
+        '''return self > other'''
+        return True
+    def __lt__(self, other):
+        '''retrun self < other'''
+        return False
+    
+    def __gn__(self,other):
+        '''return self >= other'''
+        return self > other or self == other
+    def __ln__(self, other):
+        '''return self <= other'''
+        return self < other or self == other
+    
+    def __add__(self, other):
+        '''return self + other'''
+        return self
+    def __radd__(self, other):
+        return self
+    def __sub__(self, other):
+        '''return self - other'''
+        return self
+    def __rsub__(self, other):
+        return self
+    def __str__(self) -> str:
+        return ''
+    
+
+
 
 class EmptyBlock:
     __slot__=('process', 'end')
