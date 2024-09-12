@@ -10,6 +10,7 @@ class DataUnit(enum.IntEnum):
     B = 1
     KB = 1024
 
+
 class TimeUnit(enum.IntEnum):
     s = 1
     m = 60
@@ -38,8 +39,44 @@ def point_method(func):
         point_obj = self_obj._obj
         return func(*point_obj+arg[1:] , **kwarg)
     
-class point(type):
-    pass
+class StreamCon:
+    def __init__(self) -> None:
+        self.block_list = 1
+        self._start =1
+        self._end = 1
+        self.step = 1
+        self.wait_download = asyncio.Event()
+        self.wait_iter = asyncio.Event()
+    
+    async def download(self, block):
+        assert block in self.block_list
+        while True:
+            len_chunk = len(chunk)
+            #wait iter
+            while block.process + len_chunk > self.end:
+                self.wait_iter.clear()
+                await self.wait_iter.wait()
+
+            #write
+            yield 
+
+            #call iter  暂时没有结束检测
+            if block == self.block_list[0] and block.process + len_chunk > self.start + self.step :
+                self.wait_download.set()
+
+    async def iter(self):
+        while True:
+            if self.start + self.step > self.block_list[0].process:
+                self.wait_download.clear()
+                await self.wait_download.wait()
+
+            yield
+            self.start += self.step
+        
+            #call download
+            self.wait_iter.set()
+
+
 class CircleIo:
     def __init__(self,size) -> None:
         self._size = size
@@ -69,13 +106,10 @@ class CircleIo:
             self._off += size
             return i
         else:
-            i = bytes(self.io)
+            i = bytes(self._io[self._off:] + self._io[:self._off + size - self._size])
+            return i
 
         
-    
-    def read(self, size):
-        return self._io[self._off]
-
     def tell(self):
         return self._io.tell()
 
@@ -440,35 +474,6 @@ class SpeedCacher:
         if secend > 60:
             self.monitor.reset()
         return ((self.speed - self.old_speed) / self.change_num /self.max_speed_per_thread - self.threshold) > self.accuracy/secend
-
-
-
-
-class TaskCoordinator:
-    def __init__(self) -> None:
-        self._enter = asyncio.Lock()
-        self._exit = asyncio.Lock()
-        self._enter._locked = True #在unlock中释放，在enter中获取
-        self._exit._locked = True #在exit中释放,在unlock中获取
-
-    async def __aenter__(self):
-        await self._enter.acquire()
-
-    async def __aexit__(self,exc,excv,track):
-        self._exit.release()
-
-    async def unlock(self):
-        self._enter.release()
-        await self._exit.acquire()
-        
-    async def confirm(self):
-        await self._enter.acquire()
-        self._exit.release()
-
-    def enter(self):
-        return self.__aenter__()
-    def exit(self,exc=None,excv=None,track=None):
-        return self.__aexit__(exc,excv,track)
         
 
 class Inf:

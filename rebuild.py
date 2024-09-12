@@ -62,7 +62,7 @@ asyncio.TaskGroup
 
 class Runner(asyncio.Runner):
     pass
-
+#
 class Block:
     __slots__ = ('process','end','running')
     def __init__(self, process:int, end_pos:int|None = None, running:bool = False ,) -> None:
@@ -85,7 +85,7 @@ class Block:
         self.running = False
 
 import models
-
+    
 class WebResouse():
     '''基类，只关心资源和连接状况，连接'''
     
@@ -98,7 +98,7 @@ class WebResouse():
         self.__init__(None)
         self.__dict__.update(state)
 
-    def __init__(self, url) -> None:
+    def __init__(self, url, loop = None) -> None:
         self.client = httpx.AsyncClient(limits=httpx.Limits(),)
         self.url = url
         self.block_list:list[Block] = []
@@ -108,7 +108,7 @@ class WebResouse():
         self.inited = False
         self.init_prepare = TaskCoordinator()
         self.headers = None
-        self.file_size = 0
+        self.file_size = models.Inf()
         self.accept_range = None
 
         self.process = 0
@@ -120,13 +120,17 @@ class WebResouse():
         #self.task_group.
         return len(self.task_group._tasks)
     
-    @property
-    def task_group(self):
-        if self._task_group is None or self._task_group._exiting == True:
-            self._task_group = asyncio.TaskGroup()
-        return self._task_group
     
+    async def __await__(self):
+        await self.task_group.__await__()
 
+    async def get(self, task_num, auto):
+        async with asyncio.TaskGroup() as tg:
+            if not self.inited:
+                pass
+
+    async def save(path, task_num, auto):
+        pass
     def cut_block(self,  start_pos:int, ):#end_pos:int|None = None):
         '''自动根据开始位置创建新任务,底层API'''
         if len(self.block_list) > 0 and start_pos < self.block_list[-1].end:
@@ -137,17 +141,17 @@ class WebResouse():
                     new_block = Block(start_pos, block.end, True) #分割
                     block.end = start_pos
                     self.block_list.insert(self.block_list.index(block)+1,new_block)
-                    self.task_group.create_task(self.stream(new_block))
+                    self.task_group.create_task(self.download(new_block))
                     break
             if not match:
                 raise Exception('重复下载')
         else:
             new_block = Block(start_pos, self.file_size, True)
             self.block_list.append(new_block)
-        self.task_group.create_task(self.stream(new_block))
+        self.task_group.create_task(self.download(new_block))
     
     def _handing_info(self, res:httpx.Response):
-        self.saved_info = True
+        self.inited = True
         self.accept_range = 'accept-ranges' in res.headers and res.headers['accept-ranges'] == 'bytes' or res.status_code == httpx.codes.PARTIAL_CONTENT
         if 'content-range' in res.headers and (size := res.headers['content-range'].split('/')[-1]) != '*' :
             #标准长度获取
@@ -185,14 +189,6 @@ class WebResouse():
             async with self.init_prepare as res:
                 self._handing_info(res)
 
-    async def __aenter__(self):
-        pass
-    
-    async def __aexit__(self, exv, ext, tb):
-        pass
-    
-    def __call__(self):
-        pass
     async def init(self, ):
         self.main_task = asyncio.create_task(self.main())
 
@@ -204,157 +200,82 @@ class WebResouse():
 
 
     async def stream(self, block:Block):
-        block.running = True
+        '''基础生成器，会处理截断'''
         headers = {"Range": f"bytes={block.process}-{self.file_size-1}"}
-
-        try:
-            async with client.stream('GET',self.url,headers = headers) as response:
-                response.raise_for_status()
-                if not self.saved_info:
+        async with client.stream('GET',self.url,headers = headers) as response:
+            response.raise_for_status()
+            if not self.inited:
                     #self.headers = response.headers
-                    await self.init_prepare.unlock(response)
-                    if not self.accept_range and block.process != 0:
-                        pass
-                len_chunk = 16*KB
-                async for chunk in response.aiter_raw(16384):
-                    len_chunk = 16834
-                    if block.process + len_chunk < block.end:
-                        yield chunk
-                        self.process += len_chunk
-                        block.process += len_chunk
-                    else:
-                        yield chunk[: block.end - block.process]
-                        self.process += block.end - block.process
-                        block.process = block.end
-                        break
-        except httpx._exceptions.HTTPStatusError:
-            if response.status_code == httpx.codes.REQUESTED_RANGE_NOT_SATISFIABLE:
-                pass
-        except httpx._exceptions.HTTPError:
-            pass
+                await self.init_prepare.unlock(response)
+                if not self.accept_range and block.process != 0:
+                    pass
+            async for chunk in response.aiter_raw(16*KB):
+                len_chunk = len(chunk)
+                if block.process + len_chunk < block.end:
+                    yield chunk
+                    self.process += len_chunk
+                    block.process += len_chunk
+                else:
+                    yield chunk[: block.end - block.process]
+                    self.process += block.end - block.process
+                    block.process = block.end
+                    break
+
+    async def connect(self, block:Block):
+        block.running = True
+        try:
+            await self.download(block)
         except:
-            block.running = False
+            raise
         else:
             self.block_list.remove(block)
         finally:
+            block.running = False
             self.re_divition_task()
-
-
             
-
-    async def download(self, response:httpx.Response, block:Block):
-        len_chunk = 16*KB
-        async for chunk in response.aiter_raw(16384):
-            len_chunk = 16834
-            if block.process + len_chunk < block.end:
-                yield chunk
-                block.process += len_chunk
-            else:
-                yield chunk[: block.end - block.process]
-                block.process = block.end
-                break
     async def download(self, block):
         #stream = self.stream(block)
         async for chunk in self.stream(block):
             pass
 
     
-
+from contextlib import contextmanager
 from models import CircleIo
 class WebResouseStream(WebResouse):
 
-    def __init__(self, url, seek = 0, step = KB, buffer_size = 16*MB ) -> None:
+    def __init__(self, url, start = 0, step = 16*KB, buffering = 16*MB ) -> None:
         super().__init__(url)
         self._entered = False
-        self.process = 0
-        self.seek = seek
         self.step = step
-        self.buffering = buffer_size
-        self._start = seek
-        self._end = self._start + buffer_size
-        self._io = CircleIo(buffer_size)
+        self.buffering = buffering
+        self._start = start
+        self._end = self._start + buffering
+        self._io = CircleIo(buffering)
 
+        #self.wait_init = asyncio.Event()
         self.wait_download = asyncio.Event()
         self.wait_iter = asyncio.Event()
         self.wait_download.set()
         self.wait_iter.set()
+
     @property
     def start(self):
         return self._start
     @start.setter
-    def setter(self, value):
+    def start(self, value):
         self._start = value
-        self._end = self._start + self.step
+        self._end = self._start + self.buffering
+
     @property
     def end(self):
         return self._end
-    
-    async def download(self, response: httpx.Response, block):
-        finish = False
-        len_chunk = 16*KB
-        async for chunk in response.aiter_raw(len_chunk):
-            len_chunk = len(chunk)
-            #wait iter
-            while block.process + len_chunk > self.end:
-                self.wait_iter.clear()
-                await self.wait_iter.wait()
-
-            #write
-            if block.process + len_chunk < block.end:
-                self._io.seek(block.process)
-                self._io.write(chunk)
-                block.process += len_chunk
-            else:
-                self._io.seek(block.process)
-                self._io.write(chunk)
-                block.process = block.end
-                finish = True
-                
-
-            #call iter
-            if self.start < block.process + len_chunk or block.process  < self.start + self.step:# or self.block_list[0] == block:
-                self.wait_download.set()
-
-            if finish:
-                break
-    async def download(self, block:Block):
-        async for chunk in self.stream(block):
-            len_chunk = len(chunk)
-            while block.process + len_chunk > self.end:
-                self.wait_iter.clear()
-                await self.wait_iter.wait()
-
-            self._io.seek(block.process)
-            self._io.write(chunk)
-
-            if self.start < block.process + len_chunk or block.process  < self.start + self.step:# or self.block_list[0] == block:
-                self.wait_download.set()
 
 
-    async def __anext__(self):
-        assert self._entered 
-        #wait download
-        while self.start + self.step > self.block_list[0].process:
-            self.wait_download.clear()
-            await self.wait_download.wait()
-        #read
-        self._io.seek(self.start)
-        self._io.read(self.step)
-        self.start += self.step
-        #call download
-        self.wait_iter.set()
-
-    async def main(self, first_connect=0):
-        async with self.task_group:
-            pass
-        return await super().main(first_connect)
-        
-    
     def pre_division_task(self,  block_num):
         block_size = self.buffering // block_num
         if block_num != 0:
             for i in range(block_size, self.buffering - block_num, block_size):
-                self.cut_block(i)()
+                self.cut_block(i)
         #self.speed_cache.reset(block_num)
 
     def re_division_task(self):
@@ -378,21 +299,68 @@ class WebResouseStream(WebResouse):
         else:
             max_remain_Block()
 
+        
+    async def download(self, block:Block):
+        async for chunk in self.stream(block):
+            len_chunk = len(chunk)
+            #wait iter
+            while block.process + len_chunk > self.end:
+                self.wait_iter.clear()
+                await self.wait_iter.wait()
+
+            #write
+            self._io.seek(block.process)
+            self._io.write(chunk)
+
+            #call iter  暂时没有结束检测
+            if block == self.block_list[0] and block.process + len_chunk > self.start + self.step :
+                self.wait_download.set()
+        self.block_list.remove(block)
+
+
+    async def __anext__(self):
+        #await self.wait_init.wait()
+        #wait download
+        if self.start + self.step > self.block_list[0].process:
+            self.wait_download.clear()
+            await self.wait_download.wait()
+
+        #read
+        self._io.seek(self.start)
+        i = self._io.read(self.step)
+        self.start += self.step
+
+        #call download
+        self.wait_iter.set()
+        return i
+
     async def __aenter__(self):
         assert not self._entered
-        self.main_task = asyncio.create_task(self.main(0))
-        await self.task_group.__aenter__()
         self._entered = True
+        self.task_group = await asyncio.TaskGroup().__aenter__()
+        self.cut_block(0)
+        async with self.init_prepare as res:
+            self._handing_info(res)
+            self._handing_name(res)
+            self.block_list[-1].end = self.file_size
         return self
+    
     async def __aexit__(self, et, exv, tb):
+        assert self._entered
+        for i in self.task_group._tasks:
+            i.cancel()
+        await self.task_group.__aexit__( et, exv, tb)
         self.main_task.cancel()
         self._io = None
         return False
+    
     def __aiter__(self):
+        assert self._entered
         return self
+
     
 
-
+asyncio.Task
 
 
 class WebResouseAll(WebResouse):
@@ -416,12 +384,11 @@ class WebResouseAll(WebResouse):
             for i in range(block_size, self.file_size - block_num, block_size):
                 self.cut_block(i)
         return
-        block_size = block_size = self.file_size / block_num
-        for i in range(1,block_num):
-            self.cut_block(i*block_num)
- 
-    async def download(self, response: httpx.Response, block: Block):
-        async for chunk in response.aiter_raw(16384):
+    async def main(self, first_connect_pos=0, block=None):
+        async with asyncio.TaskGroup() as self.task_group:
+            pass
+    async def download(self,block):
+        async for chunk in self.stream(block):
             len_chunk = len(chunk)
             self.context[block.process:block.process + len_chunk] = chunk
 
@@ -441,6 +408,16 @@ class WebResouseFile(WebResouseAll):
     def _handing_info(self):
         super()._handing_info()
         self.file = aiofiles.open('','w+b')
+    
+    async def main(self):
+        self.cut_block(0)
+        async with self.init_prepare:
+            self._handing_info()
+            self._handing_name()
+            self.file_name
+            self.file = await aiofiles.open(self.file_name, 'w+b')
+        async with asyncio.TaskGroup() as self.task_group:
+            pass
     
 
 class WebResouseDownload(WebResouseFile, WebResouseAll):
