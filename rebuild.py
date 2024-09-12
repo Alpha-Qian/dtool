@@ -123,14 +123,28 @@ class WebResouse():
     
     async def __await__(self):
         await self.task_group.__await__()
-
-    async def get(self, task_num, auto):
-        async with asyncio.TaskGroup() as tg:
-            if not self.inited:
-                pass
-
-    async def save(path, task_num, auto):
+    #实验性内容
+    def pre_divition(self, block_num, start, end):
+        block_size = (end - start) / block_num
+        for i in range(block_num):
+            int(start + block_size * i + 0.5)
+            self.cut_block()
+    def re_divition(self):
+        max_remain = 0
+        max_block = None
+        for block in self.block_list:
+            if block.running:
+                if (block.end - block.process)//2 > max_remain:
+                    max_remain = (block.end - block.process)//2
+                    max_block = Block
+            else:
+                if block.end - block.process > max_remain:
+                    max_remain = block.end - block.process
+                    max_block = block
+    def divition_task(self, block:Block):
         pass
+    #-----
+
     def cut_block(self,  start_pos:int, ):#end_pos:int|None = None):
         '''自动根据开始位置创建新任务,底层API'''
         if len(self.block_list) > 0 and start_pos < self.block_list[-1].end:
@@ -141,14 +155,14 @@ class WebResouse():
                     new_block = Block(start_pos, block.end, True) #分割
                     block.end = start_pos
                     self.block_list.insert(self.block_list.index(block)+1,new_block)
-                    self.task_group.create_task(self.download(new_block))
+                    self.task_group.create_task(self.connect(new_block))
                     break
             if not match:
                 raise Exception('重复下载')
         else:
             new_block = Block(start_pos, self.file_size, True)
             self.block_list.append(new_block)
-        self.task_group.create_task(self.download(new_block))
+        self.task_group.create_task(self.connect(new_block))
     
     def _handing_info(self, res:httpx.Response):
         self.inited = True
@@ -226,13 +240,14 @@ class WebResouse():
         try:
             await self.download(block)
         except:
+            print('exc')
             raise
         else:
             self.block_list.remove(block)
         finally:
             block.running = False
-            self.re_divition_task()
-            
+            #self.re_divition_task()
+
     async def download(self, block):
         #stream = self.stream(block)
         async for chunk in self.stream(block):
@@ -299,7 +314,8 @@ class WebResouseStream(WebResouse):
         else:
             max_remain_Block()
 
-        
+
+
     async def download(self, block:Block):
         async for chunk in self.stream(block):
             len_chunk = len(chunk)
@@ -313,25 +329,39 @@ class WebResouseStream(WebResouse):
             self._io.write(chunk)
 
             #call iter  暂时没有结束检测
-            if block == self.block_list[0] and block.process + len_chunk > self.start + self.step :
+            if block == self.block_list[0] and block.process + len_chunk >= self.start + self.step :
                 self.wait_download.set()
-        self.block_list.remove(block)
+        if block == self.block_list[-1]:
+            assert block is models.Inf or block.process == block.end
+            self.wait_download.set()#结束检测
+            while block.process + len_chunk > self.end:
+                self.wait_iter.clear()
+                await self.wait_iter.wait()
+            
+
 
 
     async def __anext__(self):
         #await self.wait_init.wait()
         #wait download
-        if self.start + self.step > self.block_list[0].process:
+        if self.start >= self.file_size:
+            raise StopAsyncIteration
+        if len(self.block_list) != 0 and self.start + self.step > self.block_list[0].process:
             self.wait_download.clear()
-            await self.wait_download.wait()
+            await self.wait_download.wait()#bug:完成后会一直wait
 
         #read
         self._io.seek(self.start)
-        i = self._io.read(self.step)
-        self.start += self.step
+        if self.start + self.step < self.file_size:
+            i = self._io.read(self.step)#<-------bug：不会截断
+            self.start += self.step
+        else:
+            i = self._io.read(self.file_size - self.start)
+            self.start = self.file_size
 
         #call download
         self.wait_iter.set()
+        #if self.block_list[-1]
         return i
 
     async def __aenter__(self):
@@ -350,15 +380,31 @@ class WebResouseStream(WebResouse):
         for i in self.task_group._tasks:
             i.cancel()
         await self.task_group.__aexit__( et, exv, tb)
-        self.main_task.cancel()
         self._io = None
         return False
     
     def __aiter__(self):
-        assert self._entered
         return self
-
     
+    '''new methods  '''
+    async def aiter(self):
+        return
+        await self.__aenter__()
+        while len(self.block_list) > 0:
+            if self.start + self.step > self.block_list[0].process:
+                self.wait_download.clear()
+                await self.wait_download.wait()#bug:完成后会一直wait
+
+            #read
+            self._io.seek(self.start)
+            i = self._io.read(self.step)
+            self.start += self.step
+
+            #call download
+            self.wait_iter.set()
+            #if self.block_list[-1]
+            yield i
+
 
 asyncio.Task
 
@@ -392,8 +438,6 @@ class WebResouseAll(WebResouse):
             len_chunk = len(chunk)
             self.context[block.process:block.process + len_chunk] = chunk
 
-
-        
 
 class WebResouseFile(WebResouseAll):
     '''需要初始化文件'''
@@ -459,7 +503,7 @@ class WebResouseDownload(WebResouseFile, WebResouseAll):
 
 
 
-    
+
 
 
 
