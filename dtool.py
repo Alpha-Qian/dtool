@@ -106,16 +106,6 @@ class DownloadFile:
         else:
             max_remain_Block()
             self.speed_cache.change()
-            
-    
-
-
-
-
-
-
-
-
 
 
     def cut_block(self, start_pos:int):

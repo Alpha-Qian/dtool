@@ -10,7 +10,7 @@ async def stream():
         file = await aiofiles.open('stream_test.exe','wb')
         test_set = set()
         async for chunk in stream:
-            print(f'{len(chunk)  }\t{stream.process,stream.file_size   }\t{chunk[-4:]   }')
+            print(f'{len(chunk)  }\t{stream._process,stream.file_size   }\t{chunk[-4:]   }')
             #assert chunk[-8:] not in test_set
             #test_set.add(chunk[-8:])
             await file.write(chunk)

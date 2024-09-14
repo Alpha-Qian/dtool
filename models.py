@@ -10,14 +10,53 @@ class DataUnit(enum.IntEnum):
     B = 1
     KB = 1024
 
-
+httpx.Response
 class TimeUnit(enum.IntEnum):
     s = 1
     m = 60
     h = 60 * m
     d = 24 * h
-class UnaccpetRangeError(Exception):
-    pass
+
+
+
+
+class Inf:
+    __slot__ = ()
+
+    def __eq__(self, value: object) -> bool:
+        '''return self == other'''
+        return value is Inf
+    def __gt__(self, other):
+        '''return self > other'''
+        return True
+    def __lt__(self, other):
+        '''retrun self < other'''
+        return False
+    
+    def __gn__(self,other):
+        '''return self >= other'''
+        return self > other or self == other
+    def __ln__(self, other):
+        '''return self <= other'''
+        return self < other or self == other
+    
+    def __add__(self, other):
+        '''return self + other'''
+        return self
+    def __radd__(self, other):
+        return self
+    def __sub__(self, other):
+        '''return self - other'''
+        return self
+    def __rsub__(self, other):
+        return self
+    def __str__(self) -> str:
+        return ''
+   
+class Range:
+    __slot__ = ('start', 'end')
+    def __init__(self, start, end = Inf()) -> None:
+        self.start
 
 class SyncRunner:
     loop = None
@@ -77,7 +116,7 @@ class StreamCon:
             self.wait_iter.set()
 
 
-class CircleIo:
+class CircleFuffer:
     def __init__(self,size) -> None:
         self._size = size
         self._off = 0
@@ -123,7 +162,7 @@ class CircleStream():
         self._start = 0
         self._end = self._start + size
         self.step = step
-        self._io = CircleIo(size)
+        self._io = CircleFuffer(size)
 
         self.wait_download = asyncio.Event()
         self.wait_iter = asyncio.Event()
@@ -476,39 +515,8 @@ class SpeedCacher:
         return ((self.speed - self.old_speed) / self.change_num /self.max_speed_per_thread - self.threshold) > self.accuracy/secend
         
 
-class Inf:
-    __slot__ = ()
-    def __ne__(self, value: object) -> bool:
-        '''return self == other'''
-        return value is Inf
-    def __gt__(self, other):
-        '''return self > other'''
-        return True
-    def __lt__(self, other):
-        '''retrun self < other'''
-        return False
-    
-    def __gn__(self,other):
-        '''return self >= other'''
-        return self > other or self == other
-    def __ln__(self, other):
-        '''return self <= other'''
-        return self < other or self == other
-    
-    def __add__(self, other):
-        '''return self + other'''
-        return self
-    def __radd__(self, other):
-        return self
-    def __sub__(self, other):
-        '''return self - other'''
-        return self
-    def __rsub__(self, other):
-        return self
-    def __str__(self) -> str:
-        return ''
-    
-
+ 
+httpx.Client.get
 
 
 class EmptyBlock:
@@ -545,6 +553,38 @@ class PosList:          #已弃用
         self._list.append(value)
     def move(self,value,mov):
         self._list[self._list.index(value)] = value + mov
+bytearray
 
+class bytearrayIO:
+    def __init__(self) -> None:
+        self.data = bytearray()
+        self.off = 0
+        self.len_data = 0
+    def seek(self, off):
+        if off > self.len_data:
+            self.data.extend(b'\x00' * (off - self.len_data))
+            self.len_data = off
+        self.off = off
+
+    def write(self, data:bytes):
+        self.data[self.off: self.off + len(data)] = data
+        self.off += len(data)
+
+    def read(self, size):
+        i = self.data[self.off:self.off + size]
+        self.off += size
+    
+    def read_all(self):
+        return self.data
+    
+property
+class ProcessWait(property):
+    def __init__(self, fget, fset, fdel, doc = None) -> None:
+        super().__init__(fget, fset, fdel, doc)
+        self.waiters = []
+
+    async def wait(event:asyncio.Event, process):
+        pass
+    
 
 
