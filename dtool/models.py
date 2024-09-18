@@ -6,6 +6,7 @@ import io
 import enum
 import typing
 
+
 class DataUnit(enum.IntEnum):
     B = 1
     KB = 1024
@@ -66,7 +67,7 @@ class SyncRunner:
         return loop.run_until_complete(coro)
     
     
-from rebuild import Block
+from dtool.rebuild import Block
 class BufferBlock(Block):
     def __init__(self, process: int, end_pos: int, running: bool = False) -> None:
         super().__init__(process, end_pos, running)
@@ -350,7 +351,7 @@ class BlockList:
 
     def end_index(self, end_pos:int) -> int:
         for i in range(len(self)):
-            if self[i].end == end_pos:
+            if self[i].stop == end_pos:
                 return i
         raise KeyError('cannot find the end_pos')
 
@@ -364,7 +365,7 @@ class BlockList:
         self._list.append( Block(start_pos, start_pos, True) )
     
     def record(self, stat_pos, mov_len):
-        self[self.start_index(stat_pos)].end += mov_len
+        self[self.start_index(stat_pos)].stop += mov_len
         
     def remove(self,start_pos):
         '''called when task remove'''
@@ -374,20 +375,20 @@ class BlockList:
     def empty_chunk(self) -> list[Block]:
         chunks = []
         for i in range(len(self)):
-            chunks.append( Block( self[i].end, self[i+1].start, self[i].running ))
+            chunks.append( Block( self[i].stop, self[i+1].start, self[i].running ))
     
     def unfinish_chunk(self) -> list[Block]:
         chunks = []
         for i in range(len(self)):
             if self[i].running == True:
-                chunks.append( Block( self[i].end, self[i+1].start,True ) )#   允许self[i+1]原因见__getitem__
+                chunks.append( Block( self[i].stop, self[i+1].start,True ) )#   允许self[i+1]原因见__getitem__
         return chunks
     
     def unplan_chunk(self) -> list[Block]:
         chunks = []
         for i in range(len(self)):
             if self[i].running == False:
-                chunks.append( Block( self[i].end, self[i+1].start, False ) )
+                chunks.append( Block( self[i].stop, self[i+1].start, False ) )
         return chunks
 
     def len_working_chunk(self) -> int:

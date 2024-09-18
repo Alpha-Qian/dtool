@@ -3,7 +3,7 @@ from loguru import logger
 import aiofiles.base
 import asyncio, httpx, aiofiles
 from asyncio import Event,Lock
-import models
+import dtool.models as models
 httpx.Client
 
 class DownloadControl:

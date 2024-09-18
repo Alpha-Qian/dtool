@@ -1,5 +1,5 @@
 import asyncio, typing
-from rebuild import *
+from dtool.rebuild import *
 
 def get(url) -> bytearray:
     WebResouseAll(url)

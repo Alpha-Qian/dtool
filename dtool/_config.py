@@ -1,4 +1,4 @@
-from models import Inf
+from dtool.models import Inf
 
 class Config:
     def __init__(self,
