@@ -314,6 +314,17 @@ class DownloadBase:
                     break
                 await self.unpause_event.wait()
 
+    async def range_stream(self, block:Block):
+        raw_block = Block()
+        for chunk in self.stream(raw_block):
+            size = len(chunk)
+            if raw_block.process > block.process:
+                block.process = raw_block.process
+                yield chunk
+            elif size + raw_block.process > block.process:
+                yield chunk[block.process - raw_block.process:]
+            
+
     async def download(self, block:Block):
         if block.running:
             return
@@ -336,7 +347,7 @@ class DownloadBase:
             self.re_divition()
 
     
-from dtool.models import CircleFuffer
+from .models import CircleFuffer
 class WebResouseStream(DownloadBase):
 
     def __init__(self, url, start = 0, stop = Inf, step = 16*KB, buffering = 16*MB ) -> None:
@@ -487,9 +498,6 @@ class WebResouseStream(DownloadBase):
             yield i
 
 
-asyncio.Task
-
-
 class WebResouseAll(DownloadBase):
     '''需要确保所有部分下载完成'''
     def __init__(self, url) -> None:
@@ -543,8 +551,67 @@ class WebResouseFile(DownloadBase):
 
 class StreamFile(WebResouseFile, WebResouseStream):
 
+    async def __init__(self, url) -> None:
+        super().__init__(url)
+        self.file = aiofiles
+    async def download(self, block: models.Block):
+        try:
+            stream = self.stream(block)
+            for chunk in stream:
+                pass
+
+        finally:
+            await stream.aclose()
+            await self.divition_wait()
+    
     async def __anext__(self):
-        return await super().__anext__()
+        pass
+
+class StreamBase(DownloadBase):
+
+    def __init__(self, *arg, **kwarg) -> None:
+        super().__init__(*arg, **kwarg)
+        self.wait_iter = 
+    
+    async def stream(self, block: models.Block):
+        stream = super().stream(block)
+        for i in stream:
+            size = len(i)
+            while block.process + len_chunk > self.buffer_end:
+                    self.wait_iter.clear()
+                    await self.wait_iter.wait()
+            yield i
+            if block == self.block_list[0] and block.process + len_chunk >= self.iter_process + self._step :
+                    self.wait_download.set()
+    async def __anext__(self):
+        pass
+
+    async def iter_raw(self):
+        pass
+            
+
+    def next_iter(self, size):
+        ''''''
+class FileStream:
+    def re_divition(self):
+        iter_speed = 0#
+        speed_per_thread = speed_now/task_num
+        target_pre_thread = int(iter_speed/speed_per_thread) + 1
+        remain = 0
+        pre_thread = 0
+        for i in self.block_list:
+            pre_thread += 1
+            if pre_thread > target_pre_thread:
+                break
+            pre_time = remain / (iter_speed - pre_thread * speed_per_thread)
+            if i.process + pre_thread * speed_per_thread  < self.block_list[pre_thread]:
+                self.divition_task(i.process + pre_thread * speed_per_thread * 0.8)#0.8:提前系数
+            remain += i.process - i.starti.process + pre_thread * speed_per_thread
+            
+
+
+
+
     
 
 
