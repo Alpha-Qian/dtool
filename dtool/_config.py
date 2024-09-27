@@ -41,27 +41,7 @@ DEFAULTCONTROLCONFIG = ControlConfig(turple=((0.1, 1)) )
 FORCE = True #jump over
 SECREAT = False #raise exception
 INGONE = None
-class Range:
-    def __init__(self, start = 0, end = Inf(), unrangeable_hand = INGONE) -> None:
-        '''param: 
-        force:如果在不可续传的情况下指定了非0开头的Range，允许续传时会被忽略:
-        True:丢弃其他部分
-        False:报错
-        None:忽视
-        '''
-        assert start is not Inf
-        self.start = start
-        self.end = end
-        assert self.start < self.end
-        self.force = unrangeable_hand
 
-    def move(self,):
-        pass
-    def __len__(self):
-        return self.end - self.start
-    def __bool__(self):
-        return 
-        return self.force
 '''
 注意区分: start, process, stop, end, buffer_stop, buffering等
 
@@ -82,25 +62,6 @@ buffer_stop:    stream的download函数运行在此会等待
 pre_divition:   在start 和 stop间划分
 re_divition: 根据blocklist在control前划分
 '''
-class StreamRange:
-    def __init__(self, start, process, end) -> None:
-        assert start < process < end
-        self.start = start
-        self.process = 0
-        passs
-class 
 
-ALL = Range(0, Inf(), INGONE)
 
-class ControlRange:
-    '''调度范围，end属性决定re_divition和pre_divition生效范围'''
-    def __init__(self, start = 0, end = Inf(), unrangeable_hand = INGONE) -> None:
-        '''param: 
-        force:如果在不可续传的情况下指定了非0开头的Range，允许续传时会被忽略:
-        True:丢弃其他部分
-        False:报错
-        None:忽视
-        '''
-        assert start is not Inf
-        self.start = start
-        self.end = end
+

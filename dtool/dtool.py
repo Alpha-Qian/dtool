@@ -1,10 +1,9 @@
 import aiofiles
-from loguru import logger
 import aiofiles.base
 import asyncio, httpx, aiofiles
 from asyncio import Event,Lock
 import dtool.models as models
-httpx.Client
+
 
 class DownloadControl:
     def __init__(self, url,pre_task_num = 1, auto= True) -> None:

@@ -1,5 +1,5 @@
 import asyncio
-asyncio.SelectorEventLoop
+
 class TaskCoordinator:
     def __init__(self) -> None:
         self.arg = None
