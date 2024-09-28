@@ -15,10 +15,14 @@ async def stream():
             await file.write(chunk)
         await file.close()
         print('end')
-async def all():
-    context = await rebuild.WebResouseAll(url)
-async def save():
-    WebResouseFile(url)
+
+
+
+class Test:
+    pass
+async def miao():
+    pass
+miao().__await__()
 
 asyncio.run(stream())
 

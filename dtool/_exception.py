@@ -1,7 +1,7 @@
 class NotSatisRangeError(IndexError):
     pass
 
-class NotAcceptRangError:
+class NotAcceptRangError(Exception):
     pass
 
 
