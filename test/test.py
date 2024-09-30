@@ -1,7 +1,8 @@
-#from dtool.rebuild import WebResouseStream
 import asyncio
 import aiofiles
 from dtool import *
+import abc
+import collections
 url = 'https://dldir1.qq.com/qqfile/qq/QQNT/Windows/QQ_9.9.15_240822_x64_01.exe'
 
 async def stream():

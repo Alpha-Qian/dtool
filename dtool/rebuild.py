@@ -4,11 +4,12 @@ from collections import deque
 from abc import ABC, abstractmethod
 from pathlib import Path
 
-from .models import Inf, CircleFuffer, SpeedMonitor, BufferSpeedMoniter, SpeedInfo
+from .models import Inf, CircleFuffer, SpeedMonitor, BufferSpeedMoniter, SpeedInfo, SpeedCacher
 from .taskcoordinator import TaskCoordinator
 from ._config import Config, DEFAULTCONFIG, SECREAT
 from ._exception import NotAcceptRangError, NotSatisRangeError
 import time
+client = httpx.AsyncClient(limits=httpx.Limits())
 
 B = 1
 KB = 1024
@@ -87,6 +88,7 @@ class PoolBase:
 
 
 class DownloadBase:
+    ''' deamon base '''
     ''''
     注意区分: start, process, stop, end, buffer_stop, buffering等
 
@@ -123,6 +125,9 @@ class DownloadBase:
         self._headers = None
         self._accept_range = None
 
+        self.started = False
+        self.closed = False
+
         self._task_num = 0
         self.resume = Event()
         self.resume.set()
@@ -153,6 +158,7 @@ class DownloadBase:
     def task_num(self):
         return len(self.task_group._tasks)
 
+
     def pause(self):
         self.resume.clear()
     
@@ -176,13 +182,31 @@ class DownloadBase:
             i = info[0]
             yield SpeedInfo(process - i[0], time_now - i[1])
 
-    async def Daemon_coro(self, sleep_time = 0):
+    def auto_create(self,  threshold=0.1, accuracy=0.1):
+        '''自动在需要时创建任务'''
+        while 1:
+            max_speed_per_thread = 0
+            speed_info:SpeedInfo = yield
+            max_
+
+
+    async def daemon_coro(self,*, auto = True, speed_limit = Inf(), sleep_time = 0):
         '''main coro'''
         self.divition_task(self._start)
-        async with asyncio.TaskGroup() as self.task_group:
-            self.pre_divition(1)
-        self.done.set()
+        gen = self.buffer_monitor(10)
+        if auto:
+            cacher = SpeedCacher(self.speed_monitor(), 10)
+        for info in gen:
+            asyncio.sleep(sleep_time)
+            if self.check_speed(info):
+                await self.re_divition()
+            # or...
+            await self.check_speed(info)
+            self.speed_limet(speed_limit, info)######
 
+
+
+        self.done.set()
 
     def speed_limet(self, max_speed):
         '''短暂暂停以降低到速度限制'''
@@ -199,26 +223,7 @@ class DownloadBase:
     def control_end(self):#兼容层，便于子类在不修改pre_divition,re_divition的情况下修改
         return self._stop
     
-    async def start(self):
-        if self._entered:
-            return
-        self._entered = True
-        self.task_group = await asyncio.TaskGroup().__aenter__()
-        self.divition_task(self._start)
-        async with self.init_prepare as res:
-            self._handing_info(res)
-            self.pre_divition(16)
-        return self.done
 
-    async def run(self):
-        await self.start()
-        await self.task_group.__aexit__()
-        await self.done.wait()
-
-    def close(self):
-        '''断开所有连接'''
-        for task in self.task_group._tasks:
-            task.cancel()
 
     def reset(self):
         self.block_list = []
@@ -281,31 +286,50 @@ class DownloadBase:
             self.block_list.append(task_block)
         self.task_group.create_task(self.download(task_block))
 
-    def _handing_info(self, res:httpx.Response):
+    def download_prepare(self, res:httpx.Response):
+        '''第一次成功连接后初始化下载参数'''
         self.inited = True
-        self.task_group = await asyncio.TaskGroup().__aenter__()
         self._headers = res.headers
-        self._accept_range = 'accept-ranges' in res.headers and res.headers['accept-ranges'] == 'bytes' or res.status_code == httpx.codes.PARTIAL_CONTENT
+        self._accept_range = res.headers.get('accept-ranges') == 'bytes' or res.status_code == httpx.codes.PARTIAL_CONTENT or 'content-range' in res.headers
         if 'content-range' in res.headers and (size := res.headers['content-range'].split('/')[-1]) != '*' :
             #标准长度获取
             self._file_size = int(size)
-        elif 'content-length' in res.headers and ( 'content-encoding' not in res.headers or res.headers['content-encoding'] == 'identity' ):
-            res.iter_bytes
+        elif 'content-length' in res.headers and res.headers.get('content-length','identity') == 'identity':
             #仅适用于无压缩数据，http2可能不返回此报头
             self._file_size = int(res.headers['content-length'])
         else:
             self._file_size = Inf()
             self._accept_range = False
             if self._accept_range:
-                #允许续传，但无法获得文件长度，所以发送res的请求时headers应添加range: bytes=0-不然服务器不会返回'content-range'
+                #允许续传，但无法获得文件长度，所以发送res的请求时headers应添加'range: bytes=0-'不然服务器不会返回'content-range'
                 self._accept_range = False
                 raise RuntimeWarning()
+            
         
-        if not self._accept_range and self.req_range.force == SECREAT:
-            raise NotAcceptRangError
+        import re
+        import urllib.parse
+        from urllib.parse import unquote, parse_qs, urlparse
+        from email.utils import decode_rfc2231
+        CONTECT_DISPOSITION = 'content-disposition'
+        RESPONSE_CONTENT_DISPOSITION ='response-content-disposition'
+
+        if 'filename' in res.headers.get(CONTECT_DISPOSITION, ''):
+            self.file_name = res.headers.get('content-disposition', '')
+
+        elif 'response-content-disposition' in str(res.url):
+            self.file_name = httpx.QueryParams(res.url.query)['response-content-disposition'].split("filename=")[-1]
+        else:    
+            self.file_name = str(res.url).split('/')[-1]
+        
+
+        if re.search(r'filename="(.*?)"', res.headers.get('content-disposition', ''))
+        self.file_name = re.findall(r'filename="(.*?)"', res.headers.get('content-disposition', ''))[0] or str(res.url).split('/')[-1]
+        self.file_name = urllib.parse.unquote(decode_rfc2231(re.findall(r'filename\s*=\s*["\']?([^"\';]+)["\']?',  res.headers.get('content-disposition', ''))[0]))
+
+
         self._stop = min(self._stop, self._file_size)
         self.block_list[-1].stop = self._stop
-        self.file_name = str(res.url).split('/')[-1]
+        self.pre_divition(16)
         
     async def stream(self, block:Block):
         '''基础网络获取生成器,会修改block处理截断和网络错误'''
@@ -315,8 +339,10 @@ class DownloadBase:
             if response.status_code == 416:
                 raise NotSatisRangeError
             response.raise_for_status()
+
             if not self.inited:
-                await self.init_prepare.unlock(response)
+                self.download_prepare(response)
+
             async for chunk in response.aiter_raw():
                 len_chunk = len(chunk)
                 if block.process + len_chunk < block.stop:
@@ -330,6 +356,27 @@ class DownloadBase:
                     break
                 await self.resume.wait()
 
+
+    async def start(self):
+        if self._entered:
+            return
+        self._entered = True
+        self.task_group = await asyncio.TaskGroup().__aenter__()
+        self.divition_task(self._start)
+        self.deamon = asyncio.create_task(self.daemon_coro(auto=, speed_limit= ,sleep_time= ))
+
+    
+    async def aclose(self):
+        '''断开所有连接'''
+        self.deamon.cancel()
+        for task in self.task_group._tasks:
+            task.cancel()
+        await self.client.aclose()
+
+    async def wait(self):
+        await self.task_group.__aexit__(None, None, None)
+        await self.aclose()
+    
     @abstractmethod   
     async def download(self, block:Block):
         if block.running:
@@ -367,7 +414,6 @@ class StreamBase(DownloadBase):
     @iter_process.setter
     def iter_process(self, value):
         self._iter_process = value
-        self._buffer_end = self._iter_process + self._buffering
     
     def __aiter__(self):
         return self
@@ -381,19 +427,15 @@ class StreamBase(DownloadBase):
             self.iter_now.set()
 
     async def __anext__(self):
-        if self.iter_process >= self._stop:
+        if self.iter_process >= self._stop or self.done.is_set():
             raise StopAsyncIteration
         if len(self.block_list) != 0 and self.iter_process + self._iter_step > self.block_list[0].process:
             self.iter_now.clear()
             await self.iter_now.wait()
         while 
-
+    
     async def __aenter__(self):
-        self.task_group = await asyncio.TaskGroup().__aenter__()
-        self.divition_task(0)
-        async with self.init_prepare as res:
-            self._handing_info(res)
-            self.block_list[-1].stop = self._file_size
+        await self.start
         return self
     
     async def __aexit__(self, et, exv, tb):
@@ -407,8 +449,6 @@ class StreamBase(DownloadBase):
 
     def re_divition(self) -> bool:
         pass
-
-
 
 
 class BufferBase(StreamBase):
@@ -440,6 +480,11 @@ class BufferBase(StreamBase):
     def buffer_downloaded(self):
         '''返回缓存中已下载的内容占比'''
         return (self._process + self._start - self._iter_process) / self._buffering
+    
+    @StreamBase.iter_process.setter
+    def iter_process(self, value):
+        self._iter_process = value
+        self._buffer_end = self._iter_process + self._buffering###
 
     async def stream(self, block: Block):
         for chunk in super().stream(block):
@@ -456,17 +501,14 @@ class BufferBase(StreamBase):
     async def re_divition(self):
         while not super().re_divition():
             await self.download_now.wait()
+    
     async def __anext__(self):
         self.download_now.set()
         await super().__anext__()
     
-
-
 class AllBase(DownloadBase, ABC):
-    async def start(self):
-        return await super().start()
-    async def wait(self):
-        await self.task_group.__aexit__()
+    async def __await__(self):
+        await self.wait()
 
 
 class FileBase(DownloadBase, ABC):
@@ -477,19 +519,24 @@ class FileBase(DownloadBase, ABC):
 
 
 class TempFileBase(DownloadBase, ABC):
-    async def init(self):
-        await super().init()
-        self.temp_aiofile = await aiofiles.tempfile.TemporaryFile('w+b')
+    async def start(self):
+        await super().start()
+        self.tempfile = await aiofiles.tempfile.TemporaryFile('w+b')
         self.file_lock = Lock()
 
+    async def aclose(self):
+        await super().aclose()
+        await self.tempfile.close()
 
 class BytesBase(DownloadBase, ABC):
+
     def __init__(self, url, start: int = 0, stop: int | Inf = Inf()):
         super().__init__(url, start, stop)
         self._context = bytearray()
     
 
-class ByteBuffer(BytesBase, BufferBase):
+
+class ByteBuffer(BufferBase):
 
     async def stream(self, block: Block,/):
         async for chunk in super().stream(block):
@@ -497,18 +544,26 @@ class ByteBuffer(BytesBase, BufferBase):
             assert size < self._buffering
             off = block.process % self._buffering
             if off + size <= self._buffering:
-                self._context[off: off + size] = chunk
+                self._buffer[off: off + size] = chunk
             else:
-                self._context[off:] = chunk[:off + size - self._buffering]
-                self._context[off + size - self._buffering] = chunk[off + size - self._buffering:]
+                self._buffer[off:] = chunk[:off + size - self._buffering]
+                self._buffer[off + size - self._buffering] = chunk[off + size - self._buffering:]
     
     async def __anext__(self):
         await super().__anext__()
         off = self._iter_process % self._buffering
-        return self._context[off]
+        return self._buffer[off]
+    
+    async def start(self):
+        await super().start()
+        self._buffer = bytearray()
+    async def aclose(self):
+        await super().aclose()
+        self._buffer = bytearray()
 
 
-class fileBuffer(FileBase, BufferBase):
+
+class fileBuffer(BufferBase):
 
     async def stream(self, block: Block,/):
         async for chunk in super().stream(block):
@@ -517,22 +572,32 @@ class fileBuffer(FileBase, BufferBase):
             off = block.process % self._buffering
             if off + size <= self._buffering:
                 async with self.file_lock:
-                    await self.aiofile.seek(off)
-                    await self.aiofile.write(chunk)
+                    await self.tempfile.seek(off)
+                    await self.tempfile.write(chunk)
             else:
                 async with self.file_lock:
-                    await self.aiofile.seek(off)
-                    await self.aiofile.write(chunk[:off + size - self._buffering])
-                    await self.aiofile.seek(0)
-                    await self.aiofile.write(chunk[off + size - self._buffering:])
+                    await self.tempfile.seek(off)
+                    await self.tempfile.write(chunk[:off + size - self._buffering])
+                    await self.tempfile.seek(0)
+                    await self.tempfile.write(chunk[off + size - self._buffering:])
 
     async def __anext__(self):
         await super().__anext__()
         off = self._iter_process % self._buffering
         size = self.block_list[-1] - self._iter_process
         async with self.file_lock:
-            await self.aiofile.seek(off)
-            return await self.aiofile.read(self._iter_step)
+            await self.tempfile.seek(off)
+            return await self.tempfile.read(self._iter_step)
+        
+    async def start(self):
+        await super().start()
+        self.tempfile = await aiofiles.tempfile.TemporaryFile('w+b')
+        self.file_lock = Lock()
+
+    async def aclose(self):
+        await super().aclose()
+        await self.tempfile.close()
+
 
 
 class AllBytes(AllBase, BytesBase):
@@ -673,7 +738,7 @@ class WebResouseStream(DownloadBase, StreamBase):
         self.task_group = await asyncio.TaskGroup().__aenter__()
         self.divition_task(0)
         async with self.init_prepare as res:
-            self._handing_info(res)
+            self.download_prepare(res)
             self._handing_name(res)
             self.block_list[-1].stop = self._file_size
         return self
