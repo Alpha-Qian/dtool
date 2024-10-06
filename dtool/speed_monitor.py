@@ -1,7 +1,7 @@
 from collections import deque
 from asyncio import sleep
 from time import time
-from .rebuild import DownloadBase
+from .dtool import DownloadBase
 
 
 def buffer_monitor(size, mission: DownloadBase):
