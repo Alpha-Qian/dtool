@@ -1,48 +1,52 @@
 from dtool.models import Inf
 
+
 class Config:
-    def __init__(self,
-                 pre_task,
-                 remain_time,
-                 remain_size,
-                 ) -> None:
+    def __init__(
+        self,
+        pre_task,
+        remain_time,
+        remain_size,
+    ) -> None:
         self.pre_task = pre_task
         self.remain_time = remain_time
         self.remain_size = remain_size
 
 
 class ClientConfig:
-    def __init__(self,
-                 max_mission_num,
-                 max_task,#httpx.client的最大连接数
-                 max_task_num,
-                 config = Config(),
-                 auto = True,
-
-                 ) -> None:
-        
+    def __init__(
+        self,
+        max_mission_num,
+        max_task,  # httpx.client的最大连接数
+        max_task_num,
+        config=Config(),
+        auto=True,
+    ) -> None:
         pass
+
 
 class ControlConfig:
-    def __init__(self,
-                 max_task = 64,
-                 flush_time = 1,
-                 threshold = 0.1,
-                 accuracy = 0.1,
-                 turple = ( (0.7, 3), (0.5, 2), (0.1, 1) )
-                 ) -> None:
+    def __init__(
+        self,
+        max_task=64,
+        flush_time=1,
+        threshold=0.1,
+        accuracy=0.1,
+        turple=((0.7, 3), (0.5, 2), (0.1, 1)),
+    ) -> None:
         pass
-    
+
+
 DEFAULTCONFIG = Config()
 DEFAULTCLIENTCONFIG = ClientConfig(config=DEFAULTCONFIG)
-DEFAULTCONTROLCONFIG = ControlConfig(turple=((0.1, 1)) )
+DEFAULTCONTROLCONFIG = ControlConfig(turple=((0.1, 1)))
 
 
-FORCE = True #jump over
-SECREAT = False #raise exception
+FORCE = True  # jump over
+SECREAT = False  # raise exception
 INGONE = None
 
-'''
+"""
 注意区分: start, process, stop, end, buffer_stop, buffering等
 
 0 <= start <= stream_process <= stop <= end = file_size
@@ -61,7 +65,4 @@ buffer_stop:    stream的download函数运行在此会等待
 
 pre_divition:   在start 和 stop间划分
 re_divition: 根据blocklist在control前划分
-'''
-
-
-
+"""

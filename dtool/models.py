@@ -5,16 +5,17 @@ from enum import Enum
 
 
 class SpeedInfo:
+    __slot__ = ("speed", "time", "process")
 
-    __slot__ = ('speed', 'time', 'process')
     def __init__(self, dprocess, dtime) -> None:
         self.process = dprocess
         self.time = dtime
         if dtime != 0:
-            self.speed = dprocess/dtime
+            self.speed = dprocess / dtime
         else:
             self.speed = 0
-    
+
+
 class TimeUnit(Enum):
     s = 1
     m = 60
@@ -24,6 +25,7 @@ class TimeUnit(Enum):
 
 class Inf:
     __slot__ = ()
+
     def __eq__(self, value: object) -> bool:
         """return self == other"""
         return value is Inf
@@ -61,6 +63,7 @@ class Inf:
     def __str__(self) -> str:
         return ""
 
+
 class SpeedMonitor:
     def __init__(self, mission, attr_name="process") -> None:
         self._obj = mission
@@ -81,7 +84,9 @@ class SpeedMonitor:
         self.time = time()
         return (self.process_cache - old_process) / (self.time - old_time)
 
-    def reset(self,):
+    def reset(
+        self,
+    ):
         self.process_cache = self.process
         self.time = time()
 
@@ -97,35 +102,39 @@ class SpeedMonitor:
 
 
 class BufferSpeedMoniter:
-    def __init__(self, mission, buffering, attr_name = 'process') -> None:
+    def __init__(self, mission, buffering, attr_name="process") -> None:
         self._obj = mission
         self._attr_name = attr_name
-        self.buffer:deque[tuple]= deque(maxlen = buffering) #deque( (time, process), ...)
+        self.buffer: deque[tuple] = deque(
+            maxlen=buffering
+        )  # deque( (time, process), ...)
         self.buffering = buffering
-    
+
     @property
     def process(self):
         return getattr(self._obj, self._attr_name)
-    
+
     @staticmethod
     def time():
         return time()
-    
+
     def reset(self):
         self.buffer = deque(maxlen=self.buffering)
         self.put()
-    
+
     def put(self):
         self.buffer.append((self.time(), self.process))
 
     def get(self) -> float:
         time_cache, process_cache = self.buffer[0]
-        return ( self.process - process_cache) / ( self.time() - time_cache)
-    
+        return (self.process - process_cache) / (self.time() - time_cache)
+
     def info(self) -> tuple:
         time_cache, process_cache = self.buffer[0]
-        return self.time() - time_cache, ( self.process - process_cache) / ( self.time() - time_cache)
-    
+        return self.time() - time_cache, (self.process - process_cache) / (
+            self.time() - time_cache
+        )
+
     def time_passed(self):
         return self.time() - self.buffer[0][0]
 
@@ -136,12 +145,13 @@ class BufferSpeedMoniter:
         self.buffer.append((time_now, self.process))
         time_cache, process_cache = self.buffer[0]
         if time_cache != time_now:
-            return ( self.process - process_cache) / ( time_now - time_cache)
+            return (self.process - process_cache) / (time_now - time_cache)
         else:
             return 0
-    
+
     def eta(self):
         return self.remain / self.get()
+
 
 class SpeedCacher:
     def __init__(self, mission, block_num=0, threshold=0.1, accuracy=0.1) -> None:
@@ -195,8 +205,7 @@ class SpeedCacher:
         ) > self.accuracy / secend
 
 
-
-'''
+"""
     注意区分: start, process, stop, end, buffer_stop, buffering等
 
     0 <= start <= stream_process <= stop <= end = file_size
@@ -215,4 +224,4 @@ class SpeedCacher:
 
     pre_divition:   在start 和 stop间划分
     re_divition: 根据blocklist在control前划分
-    '''
+    """
