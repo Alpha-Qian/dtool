@@ -253,30 +253,49 @@ class DownloadBase(ABC):
                     block.process = block.stop
                     break
                 await self._resume.wait()
+                
     @abstractmethod
     async def stream(self, block:Block):
         '''NotImplemented'''
         raise NotImplementedError
         async for chunk in self._stream_base(block):
             pass
+    
+    async def start_coro(self):
+        '''开始任务拓展，用于子类'''
+        pass
 
-    @abstractmethod
+    async def cancel_coro(self):
+        '''取消任务拓展，用于子类'''
+        pass
+
+    async def close_coro(self):
+        '''关闭任务拓展，用于子类'''
+        pass
+
+    async def deamon(self):
+        '''守护进程拓展，用于子类，监控下载进度等'''
+        return
+        raise NotImplementedError
+
     async def main(self):
         try:
+            
             async with self.task_group:
+                await self.start_coro()
                 self.divition_task(self._start)#启动第一个任务，会自动执行初始化
                 deamon_task = asyncio.create_task(self.deamon())
+            
         except asyncio.CancelledError:
-            pass
+            await self.cancel_coro()
 
         finally:
             deamon_task.cancel()
             await self.client.aclose()
             self._closed = True
+            await self.close_coro()
     
-    async def deamon(self):
-        '''守护进程，监控下载进度等'''
-        raise NotImplementedError
+    
         
 
     
