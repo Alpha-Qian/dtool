@@ -1,7 +1,18 @@
 import asyncio
 from time import time, monotonic
 from collections import deque
-from enum import Enum
+from enum import Enum, StrEnum, IntEnum, auto
+
+class ByteEnum(IntEnum):
+    B = 1
+    KB = 1024 * B
+    MB = 1024 * KB
+    GB = 1024 * MB
+    TB = 1024 * GB
+    PB = 1024 * TB
+    EB = 1024 * PB
+    ZB = 1024 * EB
+    YB = 1024 * ZB
 
 
 class SpeedInfo:
@@ -16,7 +27,7 @@ class SpeedInfo:
             self.speed = 0
 
 
-class TimeUnit(Enum):
+class TimeUnit(IntEnum):
     s = 1
     m = 60
     h = 60 * m

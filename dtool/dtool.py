@@ -40,6 +40,29 @@ class Block:
         self.process = process
         self.stop = end_pos
         self.running = False
+    
+    @property
+    def running(self):
+        if hasattr(self, "_task"):
+            return not self._task.done()
+        else:
+            return False
+
+    @property
+    def task(self):
+        if hasattr(self, "_task"):
+            return self._task
+        else:
+            raise AttributeError("task not set")
+
+    @task.setter
+    def task(self, value:asyncio.Task):
+        self._task = value
+
+    def cancel(self):
+        self._task.cancel()
+
+
 
     def __str__(self) -> str:
         return f"{self.process}-{self.stop}"
@@ -62,22 +85,21 @@ class DownloadBase(ABC):
         self.client = httpx.AsyncClient(limits=httpx.Limits())
         self.url = url
         self.task_group = asyncio.TaskGroup()
+        self.inited_event = asyncio.Event()
         self._block_list: list[Block] = []
         self.pre_divition_num = task_num
 
         self._start = start
         self._stop = stop
         self._process = start
-        self._contect_length: int | Inf = Inf()
-        self._contect_name = None
 
         self.inited = False
         self._accept_range = False
-
-        self._started = False
-        self._closed = False
+        self._contect_length: int | Inf = Inf()
+        self._contect_name = None
 
         self._task_num = 0
+        self._stop_divition_task = False
         self._resume = Event()  # 仅内部使用
         self._resume.set()
 
@@ -96,21 +118,20 @@ class DownloadBase(ABC):
     @property
     def length(self):
         return self._contect_length
+    
+    @property
+    def task_num(self):
+        return self._task_num
 
     @property
     def accept_range(self):
         return self._accept_range
 
     @property
-    def task_num(self):
-        return len(self.task_group._tasks)
-
-    @property
     def control_end(
         self,
     ):  # 兼容层，便于子类在不修改pre_divition,re_divition的情况下修改
         return self._stop
-
 
     def pre_divition(self, block_num):
         """预分割任务,创建指定数量的任务,并启动,已经移动到init中"""
@@ -124,9 +145,39 @@ class DownloadBase(ABC):
             ):
                 self.divition_task(i)
 
-    async def _base_re_divition(self, start, end):
-        pass
-    
+    def _base_re_divition(self, start, end, min_remain = MB):
+        '''基本的分割算法,不应该被重写'''
+        if len(self._block_list) == 0:
+            return False
+        max_remain = 0
+        max_useable_length = 0
+        create_new_block = False
+        for block in self._block_list:
+
+            if block.running:
+                if (block.stop - block.process) // 2 > max_remain:
+                    max_remain = (
+                        min(block.stop, end) - block.process
+                    ) // 2
+                    max_block = block
+
+            else:
+                if block.stop - block.process > max_remain:
+                    if block.process < self.control_end:
+                        max_remain = block.stop - block.process
+                        max_block = block
+
+        if max_block.running:
+            # 构建新块
+            if max_remain >= min_remain:
+                self.divition_task((max_block.process + max_block.stop) // 2)
+        else:
+            # 启动已有分块
+            self.task_group.create_task(self.download(block))
+            self._task_num += 1
+
+        
+
     async def re_divition(self) -> bool:
         """自动在已有的任务中创建一个新连接,成功则返回True"""
         if len(self._block_list) == 0:
@@ -159,6 +210,11 @@ class DownloadBase(ABC):
             # 启动已有分块
             self.task_group.create_task(self.download(block))
             return True
+    
+    async def on_task_exit(self):
+        """任务完成回调"""
+        await self.re_divition()
+
 
     def divition_task(
         self,
@@ -172,7 +228,9 @@ class DownloadBase(ABC):
                     match = True
                     task_block = Block(start_pos, block.stop, True)  # 分割
                     block.stop = start_pos
-                    self._block_list.insert(self._block_list.index(block) + 1, task_block)
+                    self._block_list.insert(
+                        self._block_list.index(block) + 1, task_block
+                    )
                     break
             if not match:
                 raise Exception("重复下载")
@@ -180,6 +238,18 @@ class DownloadBase(ABC):
             task_block = Block(start_pos, self._contect_length, True)
             self._block_list.append(task_block)
         self.task_group.create_task(self.download(task_block))
+        self._task_num += 1
+    
+    def cancel_one_task(self , min_remain = MB):
+        """取消一个最多剩余的任务"""
+        max_remain = 0
+        max_remain_block = None
+        for block in self._block_list:
+            if block.running and block.stop - block.process > max_remain:
+                block.running = False
+                self.task_group.cancel_scope.cancel()
+                return
+        raise Exception("没有可取消的任务")
 
     def _init(self, res: httpx.Response):
         """统一的初始化步骤,包括第一次成功连接后初始化下载参数,并创建更多任务,不应该被重写"""
@@ -187,21 +257,21 @@ class DownloadBase(ABC):
         self.inited = True
         self._headers = res.headers
         self._accept_range = (
-            res.headers.get("accept-ranges") == "bytes"
+            res.headers.get(HeadersName.ACCEPT_RANGES) == "bytes"
             or res.status_code == httpx.codes.PARTIAL_CONTENT
         )
         if (
-            "content-range" in res.headers
-            and (size := res.headers["content-range"].split("/")[-1]) != "*"
+            HeadersName.CONTECT_RANGES in res.headers
+            and (size := res.headers[HeadersName.CONTECT_RANGES].split("/")[-1]) != "*"
         ):
             # 标准长度获取
             self._contect_length = int(size)
         elif (
-            "content-length" in res.headers
-            and res.headers.get("content-length", "identity") == "identity"
+            HeadersName.CONTECT_LENGTH in res.headers
+            and res.headers.get(HeadersName.CONTECT_LENGTH, "identity") == "identity"
         ):
             # 仅适用于无压缩数据，http2可能不返回此报头
-            self._contect_length = int(res.headers["content-length"])
+            self._contect_length = int(res.headers[HeadersName.CONTECT_LENGTH])
         else:
             self._contect_length = Inf()
             self._accept_range = False
@@ -218,7 +288,6 @@ class DownloadBase(ABC):
         ):
             name = decode_rfc2231(match.group(1))[2]
             name = urllib.parse.unquote(name)  # fileName* 后的部分是编码信息
-            print("")
 
         elif match := re.search(
             r'filename\s*=\s*["\']?([^"\';]+)["\']?', contect_disposition, re.IGNORECASE
@@ -264,7 +333,7 @@ class DownloadBase(ABC):
 
     @abstractmethod
     async def _stream_base(self, block: Block):  # 只在基类中重载
-        """基础流式获取生成器,会修改block处理截断和网络错误,第一个创建的任务会自动执行下载初始化"""
+        """基础流式获取生成器,会修改block处理截断和网络错误,第一个创建的任务会自动执行下载初始化,决定如何处理数据"""
         await self._resume.wait()
         headers = {"Range": f"bytes={block.process}-"}
         async with client.stream("GET", self.url, headers=headers) as response:
@@ -313,11 +382,14 @@ class DownloadBase(ABC):
         raise NotImplementedError
 
     async def main(self):
+        """主函数，负责启动异步任务和处理错误."""
         try:
             async with self.task_group:
                 await self.start_coro()
                 self.divition_task(self._start)  # 启动第一个任务，会自动执行初始化
                 deamon_task = asyncio.create_task(self.deamon())
+                # await self.inited_event.wait()
+                # self.pre_divition(self.pre_divition_num)  # 预分割任务
 
         except asyncio.CancelledError:
             await self.cancel_coro()
@@ -340,20 +412,19 @@ class DownloadBase(ABC):
         if block.running:
             return
         block.running = True
-        self._task_num += 1
 
         try:
-            self.stream(block)
-        except asyncio.CancelledError:
-            # 取消时不调用re_divition
-            pass
+            await self.stream(block)
+
 
         except Exception:
-            await self.re_divition()
+            #Exception 不包括CancelledError
+            await self.on_task_exit()
 
         else:
-            await self.re_divition()
+            await self.on_task_exit()
             self._block_list.remove(block)
+
         finally:
             self._task_num -= 1
             block.running = False
@@ -399,6 +470,13 @@ class StreamBase(DownloadBase, ABC):
             yield chunk
             if block.process < self.next_iter_position <= block.process + len(chunk):
                 self.iter_now.set()
+    
+    async def on_task_exit(self):
+        pass
+
+    async def deamon(self):
+        while True:
+            await asyncio.sleep(1)
 
     async def aiter(self):
         """异步迭代器"""
@@ -411,7 +489,7 @@ class StreamBase(DownloadBase, ABC):
                 self.iter_now.clear()
                 await self.iter_now.wait()
             yield
-    
+
     def iter(self):
         raise NotImplementedError
         if asyncio._get_running_loop() is not None:
@@ -426,8 +504,6 @@ class StreamBase(DownloadBase, ABC):
                 if not self._loop.is_running():
                     self._loop.run_until_complete(self.iter_now.wait())
             yield
-
-    
 
 
 class BufferBase(StreamBase):
@@ -461,23 +537,15 @@ class BufferBase(StreamBase):
         """返回缓存中已下载的内容占比"""
         return (self._process + self._start - self._iter_process) / self._buffering
 
-    @StreamBase.iter_process.setter
-    def iter_process(self, value):
-        self._iter_process = value
-        self._buffer_end = self._iter_process + self._buffering  ###
-
     async def _stream_base(self, block: Block):
         for chunk in super()._stream_base(block):
             size = len(chunk)
             if block.process + size > self._buffer_end:
-                self.next_download_position = block.process + size
+                self.next_download_position = block.process + size - self._buffering
                 self.download_now.clear()
                 await self.download_now.wait()
             yield chunk
 
-    async def download(self, block: Block):
-        await super().download(block)
-        await self.re_divition()
 
     async def re_divition(self):
         while not super().re_divition():
@@ -649,13 +717,6 @@ class AllFile(AllBase, FileBase):
     def __init__(self, url, start: int = 0, stop: int | Inf = Inf()) -> None:
         super().__init__(url, start, stop)
         self.path = Path() / self.file_name
-
-    async def _wait(self):
-        await super()._wait()
-        return self.path
-
-    async def reload(self, path: Path):
-        pass
 
     async def _stream_base(self, block: Block):
         async for chunk in super()._stream_base(block):
