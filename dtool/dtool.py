@@ -32,14 +32,13 @@ class HeadersName(enum.StrEnum):
 
 
 class Block:
-    __slots__ = ("process", "stop", "running")
+    __slots__ = ("process", "stop", "_task")
 
     def __init__(
         self, process: int, end_pos: int | Inf = Inf(), running: bool = True
     ) -> None:
         self.process = process
         self.stop = end_pos
-        self.running = False
     
     @property
     def running(self):
@@ -59,7 +58,7 @@ class Block:
     def task(self, value:asyncio.Task):
         self._task = value
 
-    def cancel(self):
+    def cancel_task(self):
         self._task.cancel()
 
 
@@ -72,7 +71,6 @@ class Block:
 
     def __setstate__(self, state: tuple):
         self.process, self.stop = state
-        self.running = False
 
 
 class DownloadBase(ABC):
@@ -173,8 +171,23 @@ class DownloadBase(ABC):
                 self.divition_task((max_block.process + max_block.stop) // 2)
         else:
             # 启动已有分块
-            self.task_group.create_task(self.download(block))
+            block.task = self.task_group.create_task(self.download(block))
             self._task_num += 1
+
+    def cancel_one_task(self , min_remain = MB):
+        """取消一个最多剩余的任务"""
+        match = False
+        max_remain = 0
+        min_remain = MB
+        for block in self._block_list:
+            if block.running and block.stop - block.process > max_remain:
+                match = True
+                max_remain = block.stop - block.process
+                max_remain_block = block
+                return
+        if match and max_remain > min_remain:
+            max_remain_block.cancel_task()
+        raise Exception("没有可取消的任务")
 
         
 
@@ -237,20 +250,10 @@ class DownloadBase(ABC):
         else:
             task_block = Block(start_pos, self._contect_length, True)
             self._block_list.append(task_block)
-        self.task_group.create_task(self.download(task_block))
+        task_block.task = self.task_group.create_task(self.download(task_block))
         self._task_num += 1
     
-    def cancel_one_task(self , min_remain = MB):
-        """取消一个最多剩余的任务"""
-        max_remain = 0
-        max_remain_block = None
-        for block in self._block_list:
-            if block.running and block.stop - block.process > max_remain:
-                block.running = False
-                self.task_group.cancel_scope.cancel()
-                return
-        raise Exception("没有可取消的任务")
-
+    
     def _init(self, res: httpx.Response):
         """统一的初始化步骤,包括第一次成功连接后初始化下载参数,并创建更多任务,不应该被重写"""
         assert not self.inited
