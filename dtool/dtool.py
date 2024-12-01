@@ -35,8 +35,7 @@ class Block:
     __slots__ = ("process", "stop", "_task")
 
     def __init__(
-        self, process: int, end_pos: int | Inf = Inf(), running: bool = True
-    ) -> None:
+        self, process: int, end_pos: int | Inf = Inf()) -> None:
         self.process = process
         self.stop = end_pos
     
@@ -101,78 +100,6 @@ class DownloadBase(ABC):
         self._resume = Event()  # 仅内部使用
         self._resume.set()
 
-    @property
-    def start_pos(self):
-        return self._start
-
-    @property
-    def stop_pos(self):
-        return self._stop
-
-    @property
-    def process(self):
-        return self._process
-
-    @property
-    def length(self):
-        return self._contect_length
-    
-    @property
-    def task_num(self):
-        return self._task_num
-
-    @property
-    def accept_range(self):
-        return self._accept_range
-
-    @property
-    def control_end(
-        self,
-    ):  # 兼容层，便于子类在不修改pre_divition,re_divition的情况下修改
-        return self._stop
-
-    def pre_divition(self, block_num):
-        """预分割任务,创建指定数量的任务,并启动,已经移动到init中"""
-        return
-        if self._start > self.control_end:
-            raise RuntimeError
-        block_size = (self.control_end - self._start) // block_num
-        if block_num != 0:
-            for i in range(
-                self._start + block_size, self.control_end - block_num, block_size
-            ):
-                self.divition_task(i)
-
-    def _base_re_divition(self, start, end, min_remain = MB):
-        '''基本的分割算法,不应该被重写'''
-        if len(self._block_list) == 0:
-            return False
-        max_remain = 0
-        max_useable_length = 0
-        create_new_block = False
-        for block in self._block_list:
-
-            if block.running:
-                if (block.stop - block.process) // 2 > max_remain:
-                    max_remain = (
-                        min(block.stop, end) - block.process
-                    ) // 2
-                    max_block = block
-
-            else:
-                if block.stop - block.process > max_remain:
-                    if block.process < self.control_end:
-                        max_remain = block.stop - block.process
-                        max_block = block
-
-        if max_block.running:
-            # 构建新块
-            if max_remain >= min_remain:
-                self.divition_task((max_block.process + max_block.stop) // 2)
-        else:
-            # 启动已有分块
-            block.task = self.task_group.create_task(self.download(block))
-            self._task_num += 1
 
     def cancel_one_task(self , min_remain = MB):
         """取消一个最多剩余的任务"""
@@ -189,71 +116,14 @@ class DownloadBase(ABC):
             max_remain_block.cancel_task()
         raise Exception("没有可取消的任务")
 
-        
-
-    async def re_divition(self) -> bool:
-        """自动在已有的任务中创建一个新连接,成功则返回True"""
-        if len(self._block_list) == 0:
-            return False
-        max_remain = 0
-        for block in self._block_list:
-            if block.process > self.control_end:
-                break
-
-            if block.running:
-                if (block.stop - block.process) // 2 > max_remain:
-                    max_remain = (
-                        min(block.stop, self.control_end) - block.process
-                    ) // 2
-                    max_block = block
-
-            else:
-                if block.stop - block.process > max_remain:
-                    if block.process < self.control_end:
-                        max_remain = block.stop - block.process
-                        max_block = block
-
-        if max_block.running:
-            # 构建新块
-            if max_remain >= self:
-                self.divition_task((max_block.process + max_block.stop) // 2)
-                return True
-            return False
-        else:
-            # 启动已有分块
-            self.task_group.create_task(self.download(block))
-            return True
-    
     async def on_task_exit(self):
         """任务完成回调"""
-        await self.re_divition()
+        pass
 
-
-    def divition_task(
-        self,
-        start_pos: int,
-    ):  # end_pos:int|None = None):
-        """自动根据开始位置创建新任务,底层API"""
-        if len(self._block_list) > 0 and start_pos < self._block_list[-1].stop:
-            match = False
-            for block in self._block_list:
-                if block.process < start_pos < block.stop:
-                    match = True
-                    task_block = Block(start_pos, block.stop, True)  # 分割
-                    block.stop = start_pos
-                    self._block_list.insert(
-                        self._block_list.index(block) + 1, task_block
-                    )
-                    break
-            if not match:
-                raise Exception("重复下载")
-        else:
-            task_block = Block(start_pos, self._contect_length, True)
-            self._block_list.append(task_block)
-        task_block.task = self.task_group.create_task(self.download(task_block))
+    def start_block(self, block:Block):
+        block.task = self.task_group.create_task(self.download(block))
         self._task_num += 1
-    
-    
+
     def _init(self, res: httpx.Response):
         """统一的初始化步骤,包括第一次成功连接后初始化下载参数,并创建更多任务,不应该被重写"""
         assert not self.inited
@@ -323,16 +193,8 @@ class DownloadBase(ABC):
         self._stop = min(self._stop, self._contect_length)
         self._block_list[-1].stop = self._stop
 
-        if self.accept_range:
-            block_num = self.pre_divition_num
-            if self._start > self.control_end:
-                raise RuntimeError
-            block_size = (self.control_end - self._start) // block_num
-            if block_num != 0:
-                for i in range(
-                    self._start + block_size, self.control_end - block_num, block_size
-                ):
-                    self.divition_task(i)
+        if self._accept_range:
+            pass
 
     @abstractmethod
     async def _stream_base(self, block: Block):  # 只在基类中重载
@@ -364,8 +226,6 @@ class DownloadBase(ABC):
     async def stream(self, block: Block):
         """NotImplemented"""
         raise NotImplementedError
-        async for chunk in self._stream_base(block):
-            pass
 
     async def start_coro(self):
         """开始任务拓展，用于子类"""
@@ -389,10 +249,11 @@ class DownloadBase(ABC):
         try:
             async with self.task_group:
                 await self.start_coro()
-                self.divition_task(self._start)  # 启动第一个任务，会自动执行初始化
+                block = Block(0,)
+                self._block_list = [block]
+                self.start_block(block)
                 deamon_task = asyncio.create_task(self.deamon())
-                # await self.inited_event.wait()
-                # self.pre_divition(self.pre_divition_num)  # 预分割任务
+                asyncio.gather(self.deamon())
 
         except asyncio.CancelledError:
             await self.cancel_coro()
@@ -402,20 +263,55 @@ class DownloadBase(ABC):
             await self.client.aclose()
             self._closed = True
             await self.close_coro()
+    def __reassignWorker(self, times:int = 1):
+        '''相当于运行times次__reassignWorker,但效果更好。在只有一个worker时相当于__clacDivisionalWorker'''
+        count:dict[Block,int] = {}
+        for block in self._block_list:
+            count[block] = 1 if block.running else 0
+        
+        for i in range(times):#查找分割times次的最优解
+            maxremain = 0
+            maxblock = None
+            for block in self._block_list:
+                if (remain := ( block.stop - block.process ) / ( count[block] + 1 )) > maxremain:
+                    maxremain = remain
+                    maxblock = block
 
+            if maxremain < 1024 ** 2:
+                break
+            
+            if maxblock is not None:
+                count[maxblock] += 1
+
+        for block, divitionTimes in count.items():#根据最优解创建线程
+
+            if not block.running and divitionTimes >= 1:#检查是否需要启动work
+                self.start_block(block)
+
+            if divitionTimes >= 2:#检查是否需要分割并添加新worker
+                size = (block.stop - block.process) // divitionTimes
+                index = self._block_list.index(block)
+                for j in range(1, divitionTimes):
+                    index += 1
+                    start = block.process + j * size
+                    end = block.process + (j + 1) * size######
+                    _ = Block(start,end)
+                    self._block_list.insert(index, _)
+                    self.start_block(_)
+                _.stop = block.stop
+                block.stop = block.process + size
+
+    async def deamon(self):
+        while True:
+            pass
+    
     async def aclose(self):
         """断开所有连接"""
         return
-        self.main_task.cancel()
-        await self.main_task
 
     @abstractmethod
     async def download(self, block: Block):
         """统一的下载任务处理器,会修改block状态,不应该被重写"""
-        if block.running:
-            return
-        block.running = True
-
         try:
             await self.stream(block)
 
@@ -430,7 +326,6 @@ class DownloadBase(ABC):
 
         finally:
             self._task_num -= 1
-            block.running = False
 
 
 class AllBase(DownloadBase, ABC):
