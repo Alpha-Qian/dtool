@@ -55,7 +55,11 @@ class Block:
 
     @task.setter
     def task(self, value:asyncio.Task):
-        self._task = value
+        if not self.running:
+            self._task = value
+        else:
+            self._task.cancel()
+            self._task = value
 
     def cancel_task(self):
         self._task.cancel()
@@ -77,10 +81,11 @@ class DownloadBase(ABC):
 
     @abstractmethod
     def __init__(
-        self, url, start: int = 0, stop: int | Inf = Inf(), task_num=16, /
+        self, url, start: int = 0, stop: int | Inf = Inf(), task_num=16, chunk_size = None
     ) -> None:
         self.client = httpx.AsyncClient(limits=httpx.Limits())
         self.url = url
+        self.chunk_size = chunk_size
         self.task_group = asyncio.TaskGroup()
         self.inited_event = asyncio.Event()
         self._block_list: list[Block] = []
@@ -209,7 +214,7 @@ class DownloadBase(ABC):
             if not self.inited:
                 self._init(response)
 
-            async for chunk in response.aiter_raw():
+            async for chunk in response.aiter_raw(chunk_size = self.chunk_size):
                 len_chunk = len(chunk)
                 if block.process + len_chunk < block.stop:
                     yield chunk
@@ -242,7 +247,6 @@ class DownloadBase(ABC):
     async def deamon(self):
         """守护进程拓展，用于子类，监控下载进度等"""
         return
-        raise NotImplementedError
 
     async def main(self):
         """主函数，负责启动异步任务和处理错误."""
@@ -252,18 +256,17 @@ class DownloadBase(ABC):
                 block = Block(0,)
                 self._block_list = [block]
                 self.start_block(block)
-                deamon_task = asyncio.create_task(self.deamon())
                 asyncio.gather(self.deamon())
 
         except asyncio.CancelledError:
             await self.cancel_coro()
 
         finally:
-            deamon_task.cancel()
             await self.client.aclose()
             self._closed = True
             await self.close_coro()
-    def __reassignWorker(self, times:int = 1):
+
+    def diviton_task(self, times:int = 1):
         '''相当于运行times次__reassignWorker,但效果更好。在只有一个worker时相当于__clacDivisionalWorker'''
         count:dict[Block,int] = {}
         for block in self._block_list:
@@ -294,20 +297,26 @@ class DownloadBase(ABC):
                 for j in range(1, divitionTimes):
                     index += 1
                     start = block.process + j * size
-                    end = block.process + (j + 1) * size######
+                    end = block.process + (j + 1) * size
                     _ = Block(start,end)
                     self._block_list.insert(index, _)
                     self.start_block(_)
                 _.stop = block.stop
                 block.stop = block.process + size
 
-    async def deamon(self):
+    async def deamon_auto(self, check_time = 1):
         while True:
-            pass
-    
+            await asyncio.sleep(check_time)
+
+    async def deamon_default(self, check_time = 1):
+        while True:
+            await asyncio.sleep(check_time)
+            if self._task_num < 16:
+                self.diviton_task(16 - self._task_num) 
+
     async def aclose(self):
         """断开所有连接"""
-        return
+        pass
 
     @abstractmethod
     async def download(self, block: Block):
@@ -348,44 +357,30 @@ class AllBase(DownloadBase, ABC):
 class StreamBase(DownloadBase, ABC):
     """基本流式控制策略，没有缓冲大小限制"""
 
-    def __init__(self, *arg, step) -> None:
-        super().__init__(*arg)
-        self.iter_now = Event()
-        self.iter_now.set()
+    def __init__(self, url, start, stop, task_num, chunk_size, step) -> None:
+        super().__init__(url, start, stop, task_num, chunk_size)
+        self.iterable = Event()
+        self.next_iter_position = self._start
         self._iter_process = self._start
         self._iter_step = step
-
-    @property
-    def iter_process(self):
-        return self._iter_process
-
-    @iter_process.setter
-    def iter_process(self, value):
-        self._iter_process = value
 
     async def _stream_base(self, block: Block):
         async for chunk in super()._stream_base(block):
             yield chunk
             if block.process < self.next_iter_position <= block.process + len(chunk):
-                self.iter_now.set()
-    
-    async def on_task_exit(self):
-        pass
+                self.iterable.set()
 
-    async def deamon(self):
-        while True:
-            await asyncio.sleep(1)
 
     async def aiter(self):
         """异步迭代器"""
-        while self.iter_process < self._stop:
+        while self._iter_process < self._stop:
             if (
                 len(self._block_list) != 0
-                and self.iter_process + self._iter_step > self._block_list[0].process
+                and self.next_iter_position > self._block_list[0].process
             ):
-                self.next_iter_position = self.iter_process + self._iter_step
-                self.iter_now.clear()
-                await self.iter_now.wait()
+                self.next_iter_position = self._iter_process + self._iter_step
+                self.iterable.clear()
+                await self.iterable.wait()
             yield
 
     def iter(self):
@@ -398,9 +393,9 @@ class StreamBase(DownloadBase, ABC):
                 len(self._block_list) != 0
                 and self.iter_process + self._iter_step > self._block_list[0].process
             ):
-                self.iter_now.clear()
+                self.iterable.clear()
                 if not self._loop.is_running():
-                    self._loop.run_until_complete(self.iter_now.wait())
+                    self._loop.run_until_complete(self.iterable.wait())
             yield
 
 
@@ -409,51 +404,34 @@ class BufferBase(StreamBase):
 
     def __init__(self, *arg, step, buffering=16 * MB) -> None:
         super().__init__(*arg, step=step)
-        self.download_now = Event()
-        self.download_now.set()
+        self.downloadable = Event()
+        self.next_download_position = self._start
         self._buffering = buffering
         self._buffer_end = 0
-
-    @property
-    def buffer_start(self):
-        return self._iter_process
-
-    @property
-    def buffer_end(self):
-        return self._buffer_end
-
-    @property
-    def buffering(self):
-        return self._buffering
-
-    @property
-    def control_end(self):
-        return self._buffer_end
-
-    @property
-    def buffer_downloaded(self):
-        """返回缓存中已下载的内容占比"""
-        return (self._process + self._start - self._iter_process) / self._buffering
 
     async def _stream_base(self, block: Block):
         for chunk in super()._stream_base(block):
             size = len(chunk)
-            if block.process + size > self._buffer_end:
+            if self.next_download_position > self._start:
                 self.next_download_position = block.process + size - self._buffering
-                self.download_now.clear()
-                await self.download_now.wait()
+                self.downloadable.clear()
+                await self.downloadable.wait()
             yield chunk
 
 
-    async def re_divition(self):
-        while not super().re_divition():
-            await self.download_now.wait()
-
+    def diviton_task(self, times: int = 1):
+        real_stop = self._block_list[-1].stop
+        self._block_list[-1].stop = min(self._buffer_end, real_stop)
+        super().diviton_task(times)
+        self._block_list[-1].stop = real_stop
+    
     async def aiter(self):
         for i in super().aiter():
             yield
             if self._iter_process >= self.next_download_position:
-                self.download_now.set()
+                self.downloadable.set()
+    
+
 
 
 class FileBase(DownloadBase, ABC):
@@ -471,20 +449,17 @@ class FileBase(DownloadBase, ABC):
         self.path = path
         self.file_name = name
 
-    async def _start(self):
-        await super()._start()
+    async def start_core(self):
+        await super().start_core()
         self.aiofile = await aiofiles.open(self.file_name, "w+b")  # 会清除为空文件
         self.file_lock = Lock()
-
-    async def restart(self, path: Path):
-        self.aiofile = await aiofiles.open(path, "+ab")
 
 
 class TempFileBase(DownloadBase, ABC):
     """使用（异步）临时文件策略"""
 
-    async def _start(self):
-        await super()._start()
+    async def start(self):
+        await super().start_core()
         self.tempfile = await aiofiles.tempfile.TemporaryFile("w+b")
         self.file_lock = Lock()
 
@@ -571,14 +546,6 @@ class fileBuffer(BufferBase, TempFileBase):
                     await self.tempfile.seek(0)
                     await self.tempfile.write(chunk[off + size - self._buffering :])
 
-    async def __anext__(self):
-        await super().__anext__()
-        off = self._iter_process % self._buffering
-        size = self._block_list[-1] - self._iter_process
-        async with self.file_lock:
-            await self.tempfile.seek(off)
-            return await self.tempfile.read(self._iter_step)
-
     async def _start(self):
         await super()._start()
         self.tempfile = await aiofiles.tempfile.TemporaryFile("w+b")
@@ -599,10 +566,6 @@ class fileBuffer(BufferBase, TempFileBase):
 class AllBytes(AllBase, BytesBase):
     """下载所有内容并保存在内存中"""
 
-    async def _wait(self):
-        await super()._wait()
-        return self._context
-
     async def _stream_base(self, block: Block):
         async for chunk in super()._stream_base(block):
             size = len(chunk)
@@ -621,10 +584,6 @@ class AllFile(AllBase, FileBase):
             async with self.file_lock:
                 await self.aiofile.seek(block.process)
                 await self.aiofile.write(chunk)
-
-
-class StreamBytes(AllBytes, StreamBase):
-    pass
 
 
 class StreamFile(AllFile, StreamBase):
