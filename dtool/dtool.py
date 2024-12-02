@@ -81,19 +81,24 @@ class DownloadBase(ABC):
 
     @abstractmethod
     def __init__(
-        self, url, start: int = 0, stop: int | Inf = Inf(), task_num=16, chunk_size = None
+        self, url,blocks:None|list[Block] = None, task_num=16, chunk_size = None
     ) -> None:
         self.client = httpx.AsyncClient(limits=httpx.Limits())
         self.url = url
         self.chunk_size = chunk_size
         self.task_group = asyncio.TaskGroup()
         self.inited_event = asyncio.Event()
-        self._block_list: list[Block] = []
+        
         self.pre_divition_num = task_num
 
         self._start = start
         self._stop = stop
         self._process = start
+        if blocks is None:
+            self._block_list = [Block(0,None)]
+        else:
+            self._block_list = blocks
+        self._process = 0
 
         self.inited = False
         self._accept_range = False
@@ -214,6 +219,7 @@ class DownloadBase(ABC):
             if not self.inited:
                 self._init(response)
 
+
             async for chunk in response.aiter_raw(chunk_size = self.chunk_size):
                 len_chunk = len(chunk)
                 if block.process + len_chunk < block.stop:
@@ -226,7 +232,10 @@ class DownloadBase(ABC):
                     block.process = block.stop
                     break
                 await self._resume.wait()
-
+    
+    
+    async def handing_chunk(self, Block, chunk, chunk_size):
+        pass
     @abstractmethod
     async def stream(self, block: Block):
         """NotImplemented"""
@@ -313,10 +322,6 @@ class DownloadBase(ABC):
             await asyncio.sleep(check_time)
             if self._task_num < 16:
                 self.diviton_task(16 - self._task_num) 
-
-    async def aclose(self):
-        """断开所有连接"""
-        pass
 
     @abstractmethod
     async def download(self, block: Block):
@@ -513,12 +518,12 @@ class ByteBuffer(BufferBase):
         off = self._iter_process % self._buffering
         return self._buffer[off]
 
-    async def _start(self):
-        await super()._start()
+    async def start_coro(self):
+        await super().start_coro()
         self._buffer = bytearray()
 
-    async def aclose(self):
-        await super().aclose()
+    async def close_coro(self):
+        await super().close_coro()
         self._buffer = bytearray()
 
     async def aiter(self):
@@ -546,8 +551,8 @@ class fileBuffer(BufferBase, TempFileBase):
                     await self.tempfile.seek(0)
                     await self.tempfile.write(chunk[off + size - self._buffering :])
 
-    async def _start(self):
-        await super()._start()
+    async def start_coro(self):
+        await super().start_coro()
         self.tempfile = await aiofiles.tempfile.TemporaryFile("w+b")
         self.file_lock = Lock()
 
