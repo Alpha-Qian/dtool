@@ -80,7 +80,7 @@ class DownloadBase(ABC):
 
     @abstractmethod
     def __init__(
-        self, url,blocks:None|list[Block] = None, task_num=16, chunk_size = None
+        self, url,task_num=16, chunk_size = None
     ) -> None:
         self.client = httpx.AsyncClient(limits=httpx.Limits())
         self.url = url
@@ -90,13 +90,6 @@ class DownloadBase(ABC):
         
         self.pre_divition_num = task_num
 
-        if blocks is None:
-            self._block_list = [Block(0,None)]
-        else:
-            self._block_list = blocks
-
-        for i in self._block_list:
-            self._stop += i.stop - i.process
         self._process = 0
 
         self.inited = False
@@ -343,11 +336,19 @@ class DownloadBase(ABC):
             self._task_num -= 1
 
 
-class AllBase(DownloadBase, ABC):
+class AllBase(DownloadBase):
     """一次性获取所有内容"""
 
-    def __init__(self, url, start: int = 0, stop: int | Inf = Inf()) -> None:
-        super().__init__(url, start, stop)
+    def __init__(self, url, blocks:None|list[Block] = None) -> None:
+        super().__init__(url)
+        if blocks is None:
+            self._block_list = [Block(0,None)]
+        else:
+            self._block_list = blocks
+
+        for i in self._block_list:
+            self._stop += i.stop - i.process
+        self._process = 0
 
     def pause(self):
         self._resume.clear()
@@ -363,11 +364,11 @@ class AllBase(DownloadBase, ABC):
         asyncio.run(self.main())
 
 
-class StreamBase(DownloadBase, ABC):
+class StreamBase(DownloadBase):
     """基本流式控制策略，没有缓冲大小限制"""
 
-    def __init__(self, url, start, stop, task_num, chunk_size, step) -> None:
-        super().__init__(url, start, stop, task_num, chunk_size)
+    def __init__(self, url,task_num, chunk_size,start, stop, buffering, step) -> None:
+        super().__init__(url,task_num, chunk_size)
         self.iterable = Event()
         self.next_iter_position = self._start
         self._iter_process = self._start
@@ -378,7 +379,7 @@ class StreamBase(DownloadBase, ABC):
         if block.process < self.next_iter_position <= block.process + chunk_size:
             self.iterable.set()
 
-    async def aiter(self):
+    async def __aiter__(self):
         """异步迭代器"""
         while self._iter_process < self._stop:
             if (
@@ -388,21 +389,12 @@ class StreamBase(DownloadBase, ABC):
                 self.next_iter_position = self._iter_process + self._iter_step
                 self.iterable.clear()
                 await self.iterable.wait()
-            yield
+            await self.aiter_chunk
 
-    async def __anext__(self):
-        if (
-            len(self._block_list) != 0
-            and self.next_iter_position > self._block_list[0].process
-        ):
-            self.next_iter_position = self._iter_process + self._iter_step
-            self.iterable.clear()
-            await self.iterable.wait()
-        await self.get_chunk
 
     @abstractmethod
-    async def get_chunk(self):
-        pass
+    async def aiter_chunk(self):
+        raise NotImplementedError
 
     def iter(self):
         raise NotImplementedError
@@ -443,9 +435,9 @@ class BufferBase(StreamBase):
         super().diviton_task(times)
         self._block_list[-1].stop = real_stop
     
-    async def aiter(self):
-        for i in super().aiter():
-            yield
+    async def __aiter__(self):
+        async for chunk in StreamBase.__aiter__(self):
+            yield chunk
             if self._iter_process >= self.next_download_position:
                 self.downloadable.set()
     
@@ -458,12 +450,10 @@ class FileBase(DownloadBase, ABC):
     def __init__(
         self,
         url,
-        start: int = 0,
-        stop: int | Inf = Inf(),
         path: Path = Path(),
         name=None,
     ) -> None:
-        super().__init__(url, start, stop)
+        super().__init__(url)
         self.path = path
         self.file_name = name
 
@@ -474,6 +464,7 @@ class FileBase(DownloadBase, ABC):
         await super().start_coro()
         self.aiofile = await aiofiles.open(self.file_name, "w+b")  # 会清除为空文件
         self.file_lock = Lock()
+    
 
 
 class TempFileBase(DownloadBase):
@@ -496,40 +487,10 @@ class BytesBase(DownloadBase, ABC):
         super().__init__(url, start, stop)
         self._context = bytearray()
 
-
-class IterBytes(StreamBase, TempFileBase):
-    """在内存中迭代"""
-
-    async def aiter(self):
-        for i in super().aiter():
-            yield
-
-
-class IterFile(StreamBase, BytesBase):
-    """在文件中迭代"""
-
-    async def aiter(self):
-        async for i in super().aiter():
-            yield
-
-
 class ByteBuffer(BufferBase):
     """用内存缓冲"""
 
-    async def stream(self, block: Block, /):
-        async for chunk in super().stream(block):
-            size = len(chunk)
-            assert size < self._buffering
-            off = block.process % self._buffering
-            if off + size <= self._buffering:
-                self._buffer[off : off + size] = chunk
-            else:
-                self._buffer[off:] = chunk[: off + size - self._buffering]
-                self._buffer[off + size - self._buffering] = chunk[
-                    off + size - self._buffering :
-                ]
-    @abstractmethod
-    async def handing_chunk(self, block: Block, chunk: bytes, chunk_size: int):
+    async def write_chunk(self, block: Block, chunk: bytes, chunk_size: int):
         assert chunk_size < self._buffering
         off = block.process % self._buffering
         if off + chunk_size <= self._buffering:
@@ -552,27 +513,18 @@ class ByteBuffer(BufferBase):
     async def close_coro(self):
         await super().close_coro()
         self._buffer = bytearray()
-
-    async def aiter(self):
-        async for i in super().aiter():
-            off = self._iter_process % self._buffering
-            yield self._buffer[off]
-
-class CircleFileBase(BufferBase,TempFileBase):
-    @abstractmethod
-    async def handing_chunk(self, block: Block, chunk: bytes, chunk_size: int):
-        off = block.process % self._buffering
-        if off + chunk_size <= self._buffering:
-            async with self.file_lock:
-                await self.tempfile.seek(off)
-                await self.tempfile.write(chunk)
+    
+    async def aiter_chunk(self):
+        off = self._iter_process % self._buffering
+        if off + self._iter_step <= self._buffering:
+            c = self._buffer[off : off + self._iter_step]
         else:
-            async with self.file_lock:
-                await self.tempfile.seek(off)
-                await self.tempfile.write(chunk[: off + chunk_size - self._buffering])
-                await self.tempfile.seek(0)
-                await self.tempfile.write(chunk[off + chunk_size - self._buffering :])
-
+                c = self._buffer[off : ]
+                c += self._buffer[ : off + self._iter_step - self._buffering]
+        if 0 < self._stop - self._iter_process < self._iter_step:
+            c = c[:self._stop - self._iter_process]
+        return c
+        
 
 
 class fileBuffer(BufferBase, TempFileBase):
@@ -598,44 +550,38 @@ class fileBuffer(BufferBase, TempFileBase):
         self.file_lock = Lock()
 
     async def close_coro(self):
-        await super().aclose()
+        await super().close_coro()
         await self.tempfile.close()
 
-    async def aiter(self):
-        for i in super().aiter():
+    async def __aiter__(self):
+        for i in super().__aiter__():
             off = self._iter_process % self._buffering
             async with self.file_lock:
                 await self.tempfile.seek(off)
                 return await self.tempfile.read(self._iter_step)
+            
+    async def aiter_chunk(self):
+        off = self._iter_process % self._buffering
+        if off + self._iter_step <= self._buffering:
+            async with self.file_lock:
+                await self.tempfile.seek(off)
+                c = await self.tempfile.read(self._iter_step)
+        else:
+            async with self.file_lock:
+                await self.tempfile.seek(off)
+                c = await self.tempfile.read()
+                await self.tempfile.seek(0)
+                c = c + await self.tempfile.read(off + self._iter_step - self._buffering)
+        if 0 < self._stop - self._iter_process < self._iter_step:
+            c = c[:self._stop - self._iter_process]
+        return c
+        
 
 
 class AllBytes(AllBase, BytesBase):
     """下载所有内容并保存在内存中"""
 
-    @abstractmethod
-    async def handing_chunk(self, block: Block, chunk: bytes, chunk_size: int):
+    async def write_chunk(self, block: Block, chunk: bytes, chunk_size: int):
         self._context[block.process : block.process + chunk_size] = chunk
 
 
-class AllFile(AllBase, FileBase):
-    """下载所有内容并保存在文件中"""
-
-    def __init__(self, url, start: int = 0, stop: int | Inf = Inf()) -> None:
-        super().__init__(url, start, stop)
-        self.path = Path() / self.file_name
-
-    @abstractmethod
-    async def write_chunk(self, block: Block, chunk: bytes, chunk_size: int):
-        async with self.file_lock:
-                await self.aiofile.seek(block.process)
-                await self.aiofile.write(chunk)
-
-
-class StreamFile(AllFile, StreamBase):
-    """无文件缓存限制的迭代获取"""
-
-    @abstractmethod
-    async def __anext__(self):
-        async with self.file_lock:
-            await self.aiofile.seek(self._iter_process)
-            return await self.aiofile.read(self._iter_step)
