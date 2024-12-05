@@ -5,28 +5,27 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-import dtool
+import dtool.dtool as dtool
 
 url = 'https://dldir1.qq.com/qqfile/qq/QQNT/Windows/QQ_9.9.15_240822_x64_01.exe'
 
-async def test_all():
-    pass
+async def main():
+    await test_bytebuffer()
 
-async def test_all_file():
+async def test_base():
     pass
 
 async def test_stream():
-    return
-    async with WebResouseStream(url) as stream:
-        file = await aiofiles.open('stream_test.exe','wb')
-        async for chunk in stream:
-            print(f'{len(chunk)  }\t{stream._process,stream._file_size   }\t{chunk[-4:]   }')
-            await file.write(chunk)
-        await file.close()
-        print('end')
+    pass
 
+async def test_buffer():
+    pass
 
-asyncio.run(test_stream())
+async def test_bytebuffer():
+    async for i in dtool.CircleByteBuffer(url):
+        print(i)
+
+asyncio.run(main())
 
 
 
