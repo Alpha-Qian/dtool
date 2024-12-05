@@ -75,7 +75,6 @@ class Block:
 class DownloadBase(ABC):
     """基本控制策略 处理各种基本属性"""
 
-    @abstractmethod
     def __init__(self, url, task_num = 16, chunk_size = None, blocks:None|list[Block] = None):
 
         self.client = httpx.AsyncClient(limits=httpx.Limits())
@@ -418,17 +417,20 @@ class BufferBase(StreamBase):
 
     async def _handing_chunk(self, block: Block, chunk: bytes, chunk_size: int):
         #因为缓冲区外的块理论上不会被执行，所以不用考虑超出缓冲区的块，只用考虑最靠近缓冲区末尾的块
-        while block.process > self._iter_process + self._buffering:#检查是否在缓冲区外，在缓冲区外一直等待
-            await self.downloadable.wait()
+        #while block.process > self._iter_process + self._buffering:#检查是否在缓冲区外，在缓冲区外一直等待
+            #await self.downloadable.wait()
+        if block.process > self._iter_process + self._buffering:
+            block.cancel_task()
+            asyncio.current_task().cancel()
 
         if block.process + chunk_size > self._iter_process + self._buffering:#检查下一次写入数据会不会超出缓冲区
             self.next_downloadable_check_point = block.process + chunk_size - self._buffering
             self.downloadable.clear()
             await self.downloadable.wait()
         
-            if self._block_list[-1] != block:
-                i = self._block_list.index(block) + 1
-                self.next_downloadable_check_point = self._block_list[i].process - self._buffering
+            #if self._block_list[-1] != block:
+            #    i = self._block_list.index(block) + 1
+            #    self.next_downloadable_check_point = self._block_list[i].process - self._buffering
 
         await StreamBase._handing_chunk(self, block, chunk, chunk_size)
 
