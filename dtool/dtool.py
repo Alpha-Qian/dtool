@@ -62,8 +62,6 @@ class Block:
     def cancel_task(self):
         self._task.cancel()
 
-
-
     def __str__(self) -> str:
         return f"{self.process}-{self.stop}"
 
@@ -232,11 +230,16 @@ class DownloadBase(ABC):
     @abstractmethod
     async def _handing_chunk(self, block:Block, chunk:bytes, chunk_size:int):
         raise NotImplementedError
-        await self._write_chunk(block, chunk, chunk_size)#default
-
+    
     @abstractmethod
     async def _write_chunk(self, block:Block, chunk:bytes, chunk_size:int):
         raise NotImplementedError
+
+    @abstractmethod
+    async def _get_buffer(self, process: int, step: int) -> bytes:
+        '''仅在StreamBase及其子类中会被调用,不负责截断，不保证内容是否合法'''
+        raise NotImplementedError
+
 
     async def start_coro(self):
         """开始任务拓展，用于子类"""
@@ -356,22 +359,22 @@ class StreamBase(DownloadBase):
         super().__init__(url,task_num, chunk_size)
         self.iterable = Event()
         self._iter_process = start
-        self.next_iter_position = start + step 
+        self.next_iterable_check_point = start + step 
         self._iter_step = step
 
     async def _handing_chunk(self, block: Block, chunk: bytes, chunk_size: int):
         await self._write_chunk(block, chunk, chunk_size)
-        if block.process < self.next_iter_position <= block.process + chunk_size:
+        if block.process < self.next_iterable_check_point <= block.process + chunk_size:
             self.iterable.set()
 
     async def __aiter__(self):
         """异步迭代器, 负责截断，保证内容是否合法'''"""
         while self._iter_process < self._stop:
             if (
-                len(self._block_list) != 0
-                and self.next_iter_position > self._block_list[0].process
+                len(self._block_list) > 0
+                and  self._iter_process + self._iter_step > self._block_list[0].process
             ):
-                self.next_iter_position = self._iter_process + self._iter_step
+                self.next_iterable_check_point = self._iter_process + self._iter_step
                 self.iterable.clear()
                 await self.iterable.wait()
 
@@ -380,13 +383,10 @@ class StreamBase(DownloadBase):
             if len(chunk) + self._iter_process > self._stop:
                 chunk = chunk[: self._stop - self._iter_process]
             self._iter_process += len(chunk)
+
             yield chunk
 
 
-    @abstractmethod
-    async def _get_buffer(self, process: int, step: int) -> bytes:
-        '''不负责截断，不保证内容是否合法'''
-        raise NotImplementedError
 
     def iter(self):
         raise NotImplementedError
@@ -410,33 +410,81 @@ class BufferBase(StreamBase):
     def __init__(self, *arg, step, buffering=16 * MB) -> None:
         super().__init__(*arg, step=step)
         self.downloadable = Event()
-        self.next_download_position = self._start
+        self.next_downloadable_check_point = self._start
         self._buffering = buffering
         self._buffer_end = 0
         if self._block_list[-1].process > self._iter_process + buffering:
             raise ValueError
 
     async def _handing_chunk(self, block: Block, chunk: bytes, chunk_size: int):
-        if self.next_download_position > self._start:
-            self.next_download_position = block.process + chunk_size - self._buffering
+        #因为缓冲区外的块理论上不会被执行，所以不用考虑超出缓冲区的块，只用考虑最靠近缓冲区末尾的块
+        while block.process > self._iter_process + self._buffering:#检查是否在缓冲区外，在缓冲区外一直等待
+            await self.downloadable.wait()
+
+        if block.process + chunk_size > self._iter_process + self._buffering:#检查下一次写入数据会不会超出缓冲区
+            self.next_downloadable_check_point = block.process + chunk_size - self._buffering
             self.downloadable.clear()
             await self.downloadable.wait()
+        
+            if self._block_list[-1] != block:
+                i = self._block_list.index(block) + 1
+                self.next_downloadable_check_point = self._block_list[i].process - self._buffering
+
         await StreamBase._handing_chunk(self, block, chunk, chunk_size)
 
+
     def diviton_task(self, times: int = 1):
-        real_stop = self._block_list[-1].stop
-        self._block_list[-1].stop = min(self._buffer_end, real_stop)
-        super().diviton_task(times)
-        self._block_list[-1].stop = real_stop
+        '''相比DownloadBase的分割策略，BufferBase的分割策略更加复杂，需要考虑缓冲区的限制。'''
+        count:dict[Block,int] = {}
+        for block in self._block_list:
+            count[block] = 1 if block.running else 0
+        
+        for i in range(times):#查找分割times次的最优解
+            maxremain = 0
+            maxblock = None
+
+            for block in self._block_list:
+                if block.process > self._iter_process + self._buffering: #忽略超出缓冲区的块
+                    break
+                if (remain := ( min(block.stop, self._iter_process + self._buffering)#只计算缓冲区内的剩余进度
+                                - block.process ) / ( count[block] + 1 )) > maxremain:
+                    maxremain = remain
+                    maxblock = block
+
+            if maxremain < 1024 ** 2:
+                break
+            
+            if maxblock is not None:
+                count[maxblock] += 1
+
+        for block, divitionTimes in count.items():#根据最优解创建线程
+
+            if not block.running and divitionTimes >= 1:#检查是否需要启动work
+                self.start_block(block)
+
+            if divitionTimes >= 2:#检查是否需要分割并添加新worker
+                size = (block.stop - block.process) // divitionTimes
+                index = self._block_list.index(block)
+                for j in range(1, divitionTimes):
+                    index += 1
+                    start = block.process + j * size
+                    end = block.process + (j + 1) * size
+                    _ = Block(start,end)
+                    self._block_list.insert(index, _)
+                    self.start_block(_)
+                _.stop = block.stop
+                block.stop = block.process + size
+
     
     async def __aiter__(self):
         async for chunk in StreamBase.__aiter__(self):
             yield chunk
-            if self._iter_process >= self.next_download_position:
+            if self._iter_process >= self.next_downloadable_check_point:
                 self.downloadable.set()
 
 class CircleBufferBase(BufferBase):
-    '''循环缓冲'''
+    '''循环队列缓冲，需要检查缓冲区长度是否符合要求'''
+    #这种数据结构通常被称为 环形缓冲区（Circular Buffer）或 循环队列（Circular Queue）。它非常适合用于数据流的写入和读取，特别是在内存受限的场景中。
     def __init__(self, *arg, step, buffering=16 * MB) -> None:
         BufferBase.__init__(self, *arg, step=step, buffering=buffering)
         if self._block_list[-1].process > self._iter_process + buffering:
@@ -455,8 +503,15 @@ class FileBase(DownloadBase, ABC):
         self.path = path
         self.file_name = name
 
-    async def _handing_chunk(self, block: Block, chunk: bytes, chunk_size: int):
-        pass
+    async def _write_chunk(self, block: Block, chunk: bytes, chunk_size: int):
+        async with self.file_lock:
+            await self.aiofile.seek(block.process)  
+            await self.aiofile.write(chunk)
+
+    async def _get_buffer(self, process: int, step: int):
+        async with self.file_lock:
+            await self.aiofile.seek(process)
+            return await self.aiofile.read(step)
     
     async def start_coro(self):
         await super().start_coro()
@@ -479,47 +534,15 @@ class TempFileBase(DownloadBase):
 class BytesBase(DownloadBase, ABC):
     """使用内存策略"""
 
-    def __init__(self, url, start: int = 0, stop: int | Inf = Inf()):
-        super().__init__(url, start, stop)
-        self._context = bytearray()
-
-
-class ByteAll(AllBase):
+    async def _init(self, res: httpx.Response):
+        super()._init(res)
+        self._context = bytearray(self._contect_length)
 
     async def _write_chunk(self, block: Block, chunk: bytes, chunk_size: int):
-        pass
+        self._context[block.process : block.process + chunk_size] = chunk
 
-    async def _resume_load(self, contect):
-        pass
-
-
-
-class FileAll(AllBase):
-
-    async def _write_chunk(self, block: Block, chunk: bytes, chunk_size: int):
-        pass
-
-    async def _resume_load(self, path):
-        pass
-
-
-class ByteStream(StreamBase, ByteAll):
-
-    async def _write_chunk(self, block: Block, chunk: bytes, chunk_size: int):
-        pass
-
-    async def _get_buffer(self):
-        pass
-
-
-class FileStream(StreamBase, FileAll):
-
-    async def _write_chunk(self, block: Block, chunk: bytes, chunk_size: int):
-        pass
-
-    async def _get_buffer(self):
-        pass
-
+    async def _get_buffer(self, process: int, step: int):
+        return self._context[process : process + step]
 
 class CircleByteBuffer(CircleBufferBase):
     """用内存缓冲"""
@@ -558,7 +581,6 @@ class CircleByteBuffer(CircleBufferBase):
         if 0 < self._stop - self._iter_process < self._iter_step:
             c = c[:self._stop - self._iter_process]
         return c
-        
 
 
 class fileBuffer(CircleBufferBase, TempFileBase):
@@ -609,6 +631,7 @@ class fileBuffer(CircleBufferBase, TempFileBase):
         if 0 < self._stop - self._iter_process < self._iter_step:
             chunk = chunk[:self._stop - self._iter_process]
         return chunk
+
 
 class UncircleBytes(BufferBase):
 
