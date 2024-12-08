@@ -6,5 +6,4 @@ class NotSatisRangeError(IndexError):
 
 class NotAcceptRangError(Exception):
     """不接受索引"""
-
     pass

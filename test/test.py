@@ -6,7 +6,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import dtool.dtool as dtool
-
+asyncio.run_coroutine_threadsafe(dtool.init(), asyncio.get_event_loop())
 url = 'https://dldir1.qq.com/qqfile/qq/QQNT/Windows/QQ_9.9.15_240822_x64_01.exe'
 
 async def main():
@@ -22,7 +22,7 @@ async def test_buffer():
     pass
 
 async def test_bytebuffer():
-    async for i in dtool.CircleByteBuffer(url):
+    async for i in dtool.ByteBuffer(url):
         print(i)
 
 asyncio.run(main())
