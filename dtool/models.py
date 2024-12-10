@@ -9,7 +9,6 @@ from collections import deque
 from enum import Enum, StrEnum, IntEnum, auto
 from email.utils import decode_rfc2231
 from ._exception import NotSatisRangeError, NotAcceptRangError
-from .dtool import Block
 class ByteEnum(IntEnum):
     B = 1
     KB = 1024 * B
@@ -52,8 +51,6 @@ class ResponseHander:
     
     def get_accept_ranges(self):
         res = self.response
-        if self.get_length is None:
-            return False
         return res.headers.get(Head.ACCEPT_RANGES) == "bytes" or self.response.status_code == httpx.codes.PARTIAL_CONTENT or Head.ACCEPT_RANGES in self.response.headers
  
 
@@ -71,7 +68,7 @@ class ResponseHander:
             # 仅适用于无压缩数据，http2可能不返回此报头
             return int(self.response.headers[Head.CONTENT_LENGTH])
         else:
-            return None
+            return Inf()
 
 
     def get_filename(self):
@@ -207,54 +204,3 @@ class Inf:
 
     def __str__(self) -> str:
         return "UnKonwnSize"
-
-class Bool:#UnKonwnType
-    __slot__ = ('state')
-    def __init__(self, state = None) -> None:
-        self.state = state
-
-    def _not(self):
-        if self.state is None:
-            return Bool(None)
-        else:
-            return Bool(not self.state)
-        
-    def __bool__(self):
-        raise NotImplementedError()
-    
-    def bool(self, default:bool):
-        if self.state is None:
-            return default
-        else:
-            return bool(self.state)
-
-    def __eq__(self, value):
-        if not isinstance(value, Bool):
-            value = Bool(value)
-        if self.state is None or value.state is None:
-            return Bool(None)
-        else:
-            return Bool(self.state == value.state)
-        
-    def __or__(self, value):
-        if not isinstance(value, Bool):
-            value = Bool(value)
-        if self.state is None and value.state is None:
-            return Bool(None)
-        else:
-            return Bool(self.state or value.state)
-    
-    def __and__(self, value):
-        if not isinstance(value, Bool):
-            value = Bool(value)
-        if self.state is None or value.state is None:
-            return Bool(None)
-        else:
-            return Bool(self.state and value.state)
-    def __str__(self):
-        return self.state.__str__()
-a = Bool(None)
-b = Bool(True)
-c = a or b
-print(c.state)
-Unkownsize = Inf()
