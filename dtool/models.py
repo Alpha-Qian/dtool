@@ -8,6 +8,7 @@ from time import time, monotonic
 from collections import deque
 from enum import Enum, StrEnum, IntEnum, auto
 from email.utils import decode_rfc2231
+from ._exception import NotSatisRangeError, NotAcceptRangError
 from .dtool import Block
 class ByteEnum(IntEnum):
     B = 1
@@ -38,15 +39,81 @@ class ResponseHander:
         self.response = response
         self.request = response.request
     
-    def check_response(self, block:Block):
-        if Head.RANGES in self.response.headers:
-            assert self.response.status_code == httpx.codes.PARTIAL_CONTENT
-            assert f"bytes {block.start}-{block.stop-1}" in self.response.headers[Head.CONTENT_RANGES]
-    def get_filename(self):
-        pass
+    def check_response(self):
+        response = self.response
+        if response.status_code == 416:
+            raise NotSatisRangeError
+        response.raise_for_status()
+        if response.status_code == 200:
+            raise NotAcceptRangError
+        
+        if self.get_accept_ranges() and not self.get_filename():
+            raise NotAcceptRangError
+    
+    def get_accept_ranges(self):
+        res = self.response
+        if self.get_length is None:
+            return False
+        return res.headers.get(Head.ACCEPT_RANGES) == "bytes" or self.response.status_code == httpx.codes.PARTIAL_CONTENT or Head.ACCEPT_RANGES in self.response.headers
+ 
 
     def get_length(self):
-        pass
+        if (
+            Head.CONTENT_RANGES in self.response.headers
+            and (size := self.response.headers[Head.CONTENT_RANGES].split("/")[-1]) != "*"
+        ):
+            # 标准长度获取
+            return int(size)
+        elif (
+            Head.CONTENT_LENGTH in self.response.headers
+            and self.response.headers.get(Head.CONTENT_LENGTH, "identity") == "identity"
+        ):
+            # 仅适用于无压缩数据，http2可能不返回此报头
+            return int(self.response.headers[Head.CONTENT_LENGTH])
+        else:
+            return None
+
+
+    def get_filename(self):
+        res = self.response
+        contect_disposition = res.headers.get(
+            Head.CONTENT_DISPOSITION, default=""
+        )
+        if match := re.search(
+            r"filename\*\s*=\s*([^;]+)", contect_disposition, re.IGNORECASE
+        ):
+            name = decode_rfc2231(match.group(1))[2]
+            return urllib.parse.unquote(name)  # fileName* 后的部分是编码信息
+
+        elif match := re.search(
+            r'filename\s*=\s*["\']?([^"\';]+)["\']?', contect_disposition, re.IGNORECASE
+        ):
+            return match.group(1)
+
+        elif (
+            name := httpx.QueryParams(res.url.query)
+            .get("response-content-disposition", default="")
+            .split("filename=")[-1]
+        ):
+            name = name.split()
+            # 去掉可能存在的引号
+            if name.startswith('"') and name.endswith('"'):
+                name = name[1:-1]
+            elif name.startswith("'") and name.endswith("'"):
+                name = name[1:-1]
+            return name
+
+        elif name := res.url.path.split("/")[-1]:
+            return name
+
+        else:
+            content_type = res.headers["content-type"].split("/")[-1]
+            return None
+            return (
+                f"downloaded_file{int(time.time())}.{content_type}"  # TODO 格式化时间
+            )
+
+
 
 class SpeedRecoder:
     def __init__(self, process = 0):
@@ -81,10 +148,8 @@ class SpeedInfo:
     def __init__(self, dprocess, dtime) -> None:
         self.process = dprocess
         self.time = dtime
-        if dtime != 0:
-            self.speed = dprocess / dtime
-        else:
-            self.speed = 0
+        self.speed = dprocess / dtime
+
 
 
 class TimeUnit(IntEnum):
@@ -93,7 +158,6 @@ class TimeUnit(IntEnum):
     h = 60 * m
     d = 24 * h
 
-numbers.
 class Inf:
 
     __slot__ = ()

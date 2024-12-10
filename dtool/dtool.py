@@ -4,11 +4,9 @@ from pathlib import Path
 from asyncio import Event, Lock
 from abc import ABC, abstractmethod
 from pathlib import Path
-from .models import Inf,SpeedInfo, SpeedRecoder, Unkownsize
+from .models import Inf,SpeedInfo, SpeedRecoder, Unkownsize, ResponseHander
 from ._exception import NotAcceptRangError, NotSatisRangeError
-import time
-import re
-import urllib.parse
+
 from email.utils import decode_rfc2231
 client = httpx.AsyncClient(limits=httpx.Limits())
 
@@ -17,16 +15,6 @@ KB = 1024
 MB = 1048576
 GB = 1073741824
 TB = 1099511627776
-
-
-class HeadersName(enum.StrEnum):
-    ACCEPT_RANGES = "accept-ranges"
-    CONTENT_RANGES = "content-ranges"
-    CONTENT_LENGTH = "content-length"
-    CONTENT_TYPE = "content-type"
-    CONTENT_DISPOSITION = "content-disposition"
-    RANGES = "ranges"
-
 
 class Block:
     __slots__ = ("process", "stop", "_task")
@@ -81,7 +69,7 @@ class DownloadBase(ABC):
         self.url = url
         self.chunk_size = chunk_size
         self.task_group = asyncio.TaskGroup()
-        self.inited_event = asyncio.Event()
+        self.inited = asyncio.Event()
         
         self.target_task_num = task_num
         self.auto = auto
@@ -100,17 +88,19 @@ class DownloadBase(ABC):
         self._stop = 0
         if blocks is None:
             self._block_list = [Block()]
+        self.set_process()
+
+    def set_process(self):
+        self._process = 0
+        self._stop = 0
+        if self._block_list[-1].stop is Inf:
+            self._stop = Unkownsize
+            for i in self._block_list:
+                self._process += i.process - i.start
         else:
-            self._block_list = blocks
-            if blocks[-1].stop is Inf:
-                self._stop = Unkownsize
-                for i in self._block_list:
-                    self._process += i.process - i.start
-            else:
-                for i in self._block_list:
-                    self._process += i.process - i.start
-                    self._stop += i.stop - i.process
-                
+            for i in self._block_list:
+                self._process += i.process - i.start
+                self._stop += i.stop - i.process
 
     def cancel_one_task(self , max_remain = MB):
         """取消一个最多剩余的任务"""
@@ -134,91 +124,29 @@ class DownloadBase(ABC):
         block.task = self.task_group.create_task(self.download(block))
         self._task_num += 1
 
-    def _init(self, res: httpx.Response):
+    def _init(self, hander :ResponseHander):
         """统一的初始化步骤,包括第一次成功连接后初始化下载参数,并创建更多任务,不应该被重写"""
-        self.inited = True
-        self._headers = res.headers
-        self._accept_range = (
-            res.headers.get(HeadersName.ACCEPT_RANGES) == "bytes"
-            or res.status_code == httpx.codes.PARTIAL_CONTENT
-        )
+        self._accept_range = hander.get_accept_ranges()
+        self._contect_length = hander.get_length()
+        self._contect_name = hander.get_filename()
 
-        if (
-            HeadersName.CONTENT_RANGES in res.headers
-            and (size := res.headers[HeadersName.CONTENT_RANGES].split("/")[-1]) != "*"
-        ):
-            # 标准长度获取
-            self._contect_length = int(size)
-        elif (
-            HeadersName.CONTENT_LENGTH in res.headers
-            and res.headers.get(HeadersName.CONTENT_LENGTH, "identity") == "identity"
-        ):
-            # 仅适用于无压缩数据，http2可能不返回此报头
-            self._contect_length = int(res.headers[HeadersName.CONTENT_LENGTH])
-        else:
-            self._contect_length = Inf()
-            self._accept_range = False
-            if self._accept_range:
-                # 允许续传，但无法获得文件长度，所以发送res的请求时headers应添加'range: bytes=0-'不然服务器不会返回'content-range'
-                self._accept_range = False
-                raise RuntimeWarning()
-
-        contect_disposition = res.headers.get(
-            HeadersName.CONTENT_DISPOSITION, default=""
-        )
-        if match := re.search(
-            r"filename\*\s*=\s*([^;]+)", contect_disposition, re.IGNORECASE
-        ):
-            name = decode_rfc2231(match.group(1))[2]
-            name = urllib.parse.unquote(name)  # fileName* 后的部分是编码信息
-
-        elif match := re.search(
-            r'filename\s*=\s*["\']?([^"\';]+)["\']?', contect_disposition, re.IGNORECASE
-        ):
-            name = match.group(1)
-
-        elif (
-            name := httpx.QueryParams(res.url.query)
-            .get("response-content-disposition", default="")
-            .split("filename=")[-1]
-        ):
-            name = name.split()
-            # 去掉可能存在的引号
-            if name.startswith('"') and name.endswith('"'):
-                name = name[1:-1]
-            elif name.startswith("'") and name.endswith("'"):
-                name = name[1:-1]
-            fileName = name
-
-        elif name := res.url.path.split("/")[-1]:
-            fileName = name
-
-        else:
-            content_type = res.headers["content-type"].split("/")[-1]
-            fileName = (
-                f"downloaded_file{int(time.time())}.{content_type}"  # TODO 格式化时间
-            )
-
-        self._contect_name = fileName
         self._stop = min(self._stop, self._contect_length)
-        if self._block_list[-1].stop is None:
+        if self._block_list[-1].stop is None:  #修正self._stop
             self._block_list[-1].stop = self._stop
-        self.inited_event.set()
+        self.set_process()
+        self.inited.set()
+
 
     async def stream(self, block: Block):  # 只在基类中重载
         """基础流式获取生成器,会修改block处理截断和网络错误,第一个创建的任务会自动执行下载初始化,决定如何处理数据"""
         await self._resume.wait()
         headers = {"Range": f"bytes={block.process}-"}
         async with client.stream("GET", self.url, headers=headers) as response:
-            if response.status_code == 416:
-                raise NotSatisRangeError
-            response.raise_for_status()
-            if response.status_code == 200:
-                raise NotAcceptRangError
 
-            if not self.inited_event.is_set():
-                self._init(response)
-                
+            hander = ResponseHander(response)
+            hander.check_response()
+            if not self.inited.is_set():
+                self._init(hander)
 
             async for chunk in response.aiter_raw(chunk_size = self.chunk_size):
                 len_chunk = len(chunk)
@@ -234,14 +162,13 @@ class DownloadBase(ABC):
                     break
                 await self._resume.wait()
 
-            if block.stop is None:#解决大小未知的情况
+            if block.stop is Inf:#解决大小未知的情况
                 block.stop = block.process
                 self._stop = block.stop
     
     async def _handing_chunk(self, block:Block, chunk:bytes, chunk_size:int):
         await self._write_chunk(block, chunk, chunk_size)
 
-    
     @abstractmethod
     async def _write_chunk(self, block:Block, chunk:bytes, chunk_size:int):
         raise NotImplementedError
@@ -272,7 +199,7 @@ class DownloadBase(ABC):
                 block = Block()
                 self._block_list = [block]
                 self.start_block(block)
-                await self.inited_event.wait()
+                await self.inited.wait()
 
                 deamo = self.deamon_auto() if self.target_task_num is None else self.deamon_default()
                 tg.create_task(deamo)
@@ -391,14 +318,6 @@ class DownloadBase(ABC):
         finally:
             self._task_num -= 1
 
-
-class AllBase(DownloadBase):
-    """一次性获取所有内容"""
-
-    def run(self):
-        """启动下载"""
-        asyncio.run(self.main())
-    
 class StreamBase(DownloadBase):
     """基本流式控制策略，没有缓冲大小限制"""
 
@@ -406,7 +325,7 @@ class StreamBase(DownloadBase):
         super().__init__(url,task_num, chunk_size, blocks=blocks)
         self.iterable = Event()
         self._iter_process = start
-        self.next_iterable_check_point = start + step 
+        self.next_iterable_check_point = self._iter_process + self._iter_step
         self._iter_step = step
 
     async def _handing_chunk(self, block: Block, chunk: bytes, chunk_size: int):
@@ -418,6 +337,7 @@ class StreamBase(DownloadBase):
         """异步迭代器, 负责截断，保证内容是否合法'''"""
         main_task = asyncio.create_task(self.main())
         while self._iter_process < self._stop:
+
             if len(self._block_list) > 0 and  self._iter_process + self._iter_step > self._block_list[0].process:
                 self.next_iterable_check_point = self._iter_process + self._iter_step
                 self.iterable.clear()
@@ -431,40 +351,19 @@ class StreamBase(DownloadBase):
             yield chunk
         await main_task
 
-
-
-    def iter(self):
-        raise NotImplementedError
-        if asyncio._get_running_loop() is not None:
-            raise RuntimeError('Use "async for" in async context')
-        """同步迭代器"""
-        while self.iter_process < self._stop:
-            if (
-                len(self._block_list) != 0
-                and self.iter_process + self._iter_step > self._block_list[0].process
-            ):
-                self.iterable.clear()
-                if not self._loop.is_running():
-                    self._loop.run_until_complete(self.iterable.wait())
-            yield
-
-
 class BufferBase(StreamBase):
     """有缓冲大小限制的基本策略"""
 
     def __init__(self, *arg, buffering=16 * MB) -> None:
         super().__init__(*arg)
         self.downloadable = Event()
-        self.next_downloadable_check_point = self._start
+        self.next_downloadable_check_point = self._iter_process
         self._buffering = buffering
         self._buffer_end = 0
         if self._block_list[-1].process > self._iter_process + buffering:
             raise ValueError
 
     async def _handing_chunk(self, block: Block, chunk: bytes, chunk_size: int):
-        #因为缓冲区外的块理论上不会被执行，所以不用考虑超出缓冲区的块，只用考虑最靠近缓冲区末尾的块
-        #while block.process > self._iter_process + self._buffering:#检查是否在缓冲区外，在缓冲区外一直等待
-            #await self.downloadable.wait()
         if block.process > self._iter_process + self._buffering:
             block.cancel_task()
 
@@ -472,10 +371,6 @@ class BufferBase(StreamBase):
             self.next_downloadable_check_point = block.process + chunk_size - self._buffering
             self.downloadable.clear()
             await self.downloadable.wait()
-        
-            #if self._block_list[-1] != block:
-            #    i = self._block_list.index(block) + 1
-            #    self.next_downloadable_check_point = self._block_list[i].process - self._buffering
 
         await StreamBase._handing_chunk(self, block, chunk, chunk_size)
 
@@ -533,7 +428,6 @@ class BufferBase(StreamBase):
 
 class CircleBufferBase(BufferBase):
     '''循环队列缓冲，需要检查缓冲区长度是否符合要求'''
-    #这种数据结构通常被称为 环形缓冲区（Circular Buffer）或 循环队列（Circular Queue）。它非常适合用于数据流的写入和读取，特别是在内存受限的场景中。
     def __init__(self, *arg) -> None:
         BufferBase.__init__(self, *arg)
         if self._block_list[-1].process > self._iter_process + self._buffering:
