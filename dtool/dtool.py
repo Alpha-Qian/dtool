@@ -133,13 +133,9 @@ class DownloadBase(ABC):
             self._accept_range = hander.get_accept_ranges()
         else:
             self._accept_range = False
-        
 
-        self._stop = min(self._stop, self._contect_length)
-        if self._block_list[-1].stop is Inf:  #修正self._stop
-            self._block_list[-1].stop = self._stop
         self.set_process()
-    
+        await self._init_cache()
     
     async def stream(self, block: Block):  # 只在基类中重载
         """基础流式获取生成器,会修改block处理截断和网络错误,第一个创建的任务会自动执行下载初始化,决定如何处理数据"""
@@ -184,25 +180,13 @@ class DownloadBase(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def _read_cache(self, process: int, step: int) -> bytes:
+    async def _read_cache(self, process: int, size: int) -> bytes:
         '''仅在StreamBase及其子类中会被调用,不负责截断，不保证内容是否合法'''
         raise NotImplementedError
     
     @abstractmethod
     async def _close_cache(self):
         raise NotImplementedError
-
-    async def start_coro(self):
-        """开始任务拓展，用于子类"""
-        pass
-
-    async def cancel_coro(self):
-        """取消任务拓展，用于子类"""
-        pass
-
-    async def close_coro(self):
-        """关闭任务拓展，用于子类"""
-        pass
 
     async def main(self):
         """主函数，负责启动异步任务和处理错误."""
@@ -212,16 +196,15 @@ class DownloadBase(ABC):
             async with self.task_group as tg:
                 self.start_block(block)
                 await self.inited.wait()
-                await self.start_coro()
-
                 deamo = self.deamon_auto() if self.target_task_num is None else self.deamon_default()
                 tg.create_task(deamo)
 
         except asyncio.CancelledError:
-            await self.cancel_coro()
+            pass
 
         finally:
             await self.client.aclose()
+            await self._close_cache()
 
     def divition_task(self, times:int = 1):
         '''相当于运行times次divition_task,但效果更好。在只有一个worker时相当于__clacDivisionalWorker'''
@@ -449,7 +432,6 @@ class CircleBufferBase(BufferBase):
             raise ValueError
 
 
-
 class FileBase(DownloadBase):
     """写入(异步）文件策略"""
 
@@ -458,76 +440,73 @@ class FileBase(DownloadBase):
         self.file_name = file_name
         self.path = path
         self.file_lock = Lock()
-        self.aiofile = None
-    
-    async def _init(self, hander):
-        await super()._init(hander)
-        if self.path is not None:
-            if self.path.is_dir():
-                if self.file_name is not None:
-                    self.file_path = self.path / self.file_name
-                else:
-                    self.file_path = self.path / self.contet_name
-            else:
-                self.file_path = self.path
-        else:
-            if self.file_name is not None:
-                self.file_path = Path(self.file_name)
-            else:
-                self.file_path = Path(self.contet_name)
-        await aiofiles.open(self.file_path, "a+b")
-    
+
     async def _init_cache(self):
-        pass
+        if self.path is None:
+            self.path = Path.cwd()
+
+        if self.path.is_dir():
+            if self.file_name is not None:
+                self.dest = self.path / self.file_name
+            else:
+                self.dest = self.path / self.contet_name
+        elif self.path.is_file():
+            self.dest = self.path
+        else:
+            raise ValueError("path is set but not a exists file or directory")
+        self.aiofile = await aiofiles.open(self.dest, "a+b")
 
     async def _write_cache(self, block: Block, chunk: bytes, chunk_size: int):
         async with self.file_lock:
-            await self.aiofile.seek(block.process)  
+            await self.aiofile.seek(block.process)
             await self.aiofile.write(chunk)
 
     async def _read_cache(self, process: int, step: int):
         async with self.file_lock:
             await self.aiofile.seek(process)
             return await self.aiofile.read(step)
-    
-    async def start_coro(self):
-        await super().start_coro()
-        self.aiofile = await aiofiles.open(self.file_name, "a+b")
 
+    async def _close_cache(self):
+        await self.aiofile.close()
 
 class TempFileBase(DownloadBase):
     """使用（异步）临时文件策略"""
 
-    async def start_coro(self):
-        await super().start_coro()
-        self.tempfile = await aiofiles.tempfile.TemporaryFile("w+b")
-        self.file_lock = Lock()
-    
     async def _init_cache(self):
-        pass
-    async def close_coro(self):
-        await super().close_coro()
+        self.tempfile = await aiofiles.tempfile.TemporaryFile("a+b")
+        self.file_lock = Lock()
+
+    async def _write_cache(self, block: Block, chunk: bytes, chunk_size: int):
+        async with self.file_lock:
+            await self.tempfile.seek(block.process)  
+            await self.tempfile.write(chunk)
+
+    async def _read_cache(self, process: int, step: int):
+        async with self.file_lock:
+            await self.tempfile.seek(process)
+            return await self.tempfile.read(step)
+    
+    async def _close_cache(self):
         await self.tempfile.close()
 
 
 class BytesBase(DownloadBase):
     """使用内存策略"""
 
-    async def _init(self, res: httpx.Response):
-        await super()._init(res)
+    async def _init_cache(self):
         if self._contect_length is not Inf:
             self._context = bytearray(self._contect_length)
         else:
             self._context = bytearray()
-    
-    async def _init_cache(self):
-        pass
 
     async def _write_cache(self, block: Block, chunk: bytes, chunk_size: int):
         self._context[block.process : block.process + chunk_size] = chunk
 
     async def _read_cache(self, process: int, step: int):
         return self._context[process : process + step]
+
+    async def _close_cache(self):
+        pass
 
 
 class ByteBuffer(CircleBufferBase):
@@ -549,17 +528,9 @@ class ByteBuffer(CircleBufferBase):
         off = self._iter_process % self._buffering
         return self._buffer[off]
 
-    async def start_coro(self):
-        await super().start_coro()
-        self._buffer = bytearray()
-
     async def _init_cache(self):
-        pass
-
-    async def close_coro(self):
-        await super().close_coro()
         self._buffer = bytearray()
-    
+
     async def _read_cache(self):
         off = self._iter_process % self._buffering
         if off + self._iter_step <= self._buffering:
@@ -571,11 +542,15 @@ class ByteBuffer(CircleBufferBase):
             c = c[:self._stop - self._iter_process]
         return c
 
+    async def _close_cache(self):
+        self._buffer = bytearray()
+
 
 class FileBuffer(CircleBufferBase, TempFileBase):
     """用临时文件缓冲"""
     async def _init_cache(self):
-        pass
+        self.tempfile = await aiofiles.tempfile.TemporaryFile("w+b")
+        self.file_lock = Lock()
     
     async def _write_cache(self, block: Block, chunk: bytes, chunk_size: int):
         off = block.process % self._buffering
@@ -590,24 +565,6 @@ class FileBuffer(CircleBufferBase, TempFileBase):
                 await self.tempfile.seek(0)
                 await self.tempfile.write(chunk[off + chunk_size - self._buffering :])
 
-
-    async def _init(self, hander):
-        await super()._init(hander)
-        self.tempfile = await aiofiles.tempfile.TemporaryFile("w+b")
-        self.file_lock = Lock()
-
-
-    async def close_coro(self):
-        await super().close_coro()
-        await self.tempfile.close()
-
-    async def __aiter__(self):
-        for i in super().__aiter__():
-            off = self._iter_process % self._buffering
-            async with self.file_lock:
-                await self.tempfile.seek(off)
-                return await self.tempfile.read(self._iter_step)
-            
     async def _read_cache(self):
         off = self._iter_process % self._buffering
         if off + self._iter_step <= self._buffering:
@@ -624,6 +581,8 @@ class FileBuffer(CircleBufferBase, TempFileBase):
             chunk = chunk[:self._stop - self._iter_process]
         return chunk
 
+    async def _close_cache(self):
+        pass
 
 class BlockBytes(StreamBase):
 
@@ -651,7 +610,6 @@ class BlockBytes(StreamBase):
             await self.stream(block)
         except Exception as e:
             pass
-            #Exception 不包括CancelledError
         else:
             chunk = self._buffers.pop(block)
             i = self._block_list.index(block) + 1
