@@ -22,7 +22,7 @@ class ByteEnum(IntEnum):
 
 class Head(StrEnum):
     ACCEPT_RANGES = "accept-ranges"
-    CONTENT_RANGES = "content-ranges"
+    CONTENT_RANGE = "content-range"
     CONTENT_LENGTH = "content-length"
     CONTENT_TYPE = "content-type"
     CONTENT_DISPOSITION = "content-disposition"
@@ -55,9 +55,11 @@ class ResponseHander:
  
 
     def get_length(self):
+        for i in self.response.headers:
+            print(f'{i}\t{self.response.headers[i]}')
         if (
-            Head.CONTENT_RANGES in self.response.headers
-            and (size := self.response.headers[Head.CONTENT_RANGES].split("/")[-1]) != "*"
+            Head.CONTENT_RANGE in self.response.headers
+            and (size := self.response.headers[Head.CONTENT_RANGE].split("/")[-1]) != "*"
         ):
             # 标准长度获取
             return int(size)
@@ -164,9 +166,9 @@ class Inf:
     def __hash__(self):
         return hash(self.__class__)
     
-    def __eq__(self, value: object) -> bool:
+    def __eq__(self, value) -> bool:
         """return self == other"""
-        return value is Inf
+        return isinstance(value, Inf)
 
     def __gt__(self, other):
         """return self > other"""
@@ -204,3 +206,5 @@ class Inf:
 
     def __str__(self) -> str:
         return "UnKonwnSize"
+
+UnKonwnSize = Inf()

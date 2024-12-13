@@ -4,10 +4,10 @@ from pathlib import Path
 from asyncio import Event, Lock
 from abc import ABC, abstractmethod
 from pathlib import Path
-from .models import Inf,SpeedInfo, SpeedRecoder, Unkownsize, ResponseHander
+from .speedlimit import Monitor
+from .models import Inf,SpeedInfo, SpeedRecoder,ResponseHander, UnKonwnSize
 from ._exception import NotAcceptRangError, NotSatisRangeError
 
-from email.utils import decode_rfc2231
 client = httpx.AsyncClient(limits=httpx.Limits())
 
 B = 1
@@ -20,7 +20,7 @@ class Block:
     __slots__ = ("start", "process", "stop", "_task")
 
     def __init__(
-        self, process: int = 0, end_pos: int | Inf = Unkownsize) -> None:
+        self, process: int = 0, end_pos: int | Inf = Inf()) -> None:
         self.start = process
         self.process = process
         self.stop = end_pos
@@ -71,7 +71,7 @@ class DownloadBase(ABC):
         self.task_group = asyncio.TaskGroup()
         self.inited = asyncio.Event()
         
-        self.target_task_num = task_num
+        self.max_task_num = task_num
         self.auto = auto
         self.max_remain = max_remain
 
@@ -83,24 +83,31 @@ class DownloadBase(ABC):
         self._stop_divition_task = False
         self._resume = Event()
         self._resume.set()
-
+        self._limit = Monitor()
+        self._stop = Inf()
         self._process = 0
-        self._stop = 0
+
         if blocks is None:
             self._block_list = [Block()]
         self.set_process()
 
     def set_process(self):
-        self._process = 0
-        self._stop = 0
-        if self._block_list[-1].stop is Inf:
+        if self._contect_length != UnKonwnSize and self._stop == UnKonwnSize:
+            self._stop = self._contect_length
+            self._block_list[-1].stop = self._stop
+
+        process = 0
+        stop = 0
+        if self._block_list[-1].stop == UnKonwnSize:
             self._stop = Inf()
             for i in self._block_list:
-                self._process += i.process - i.start
+                process += i.process - i.start
         else:
             for i in self._block_list:
-                self._process += i.process - i.start
-                self._stop += i.stop - i.process
+                process += i.process - i.start
+                stop += i.stop - i.process
+            self._stop = stop
+        self._process = process
 
 
     def cancel_one_task(self , max_remain = MB):
@@ -129,13 +136,16 @@ class DownloadBase(ABC):
         """统一的初始化步骤,包括第一次成功连接后初始化下载参数,并创建更多任务,不应该被重写"""
         self._contect_length = hander.get_length()
         self._contect_name = hander.get_filename()
-        if self._contect_length is not Inf:
+        if self._contect_length != UnKonwnSize:
             self._accept_range = hander.get_accept_ranges()
         else:
             self._accept_range = False
-
+        if not self._accept_range:
+            self.max_task_num = 1
         self.set_process()
+
         await self._init_cache()
+
     
     async def stream(self, block: Block):  # 只在基类中重载
         """基础流式获取生成器,会修改block处理截断和网络错误,第一个创建的任务会自动执行下载初始化,决定如何处理数据"""
@@ -151,7 +161,8 @@ class DownloadBase(ABC):
 
             async for chunk in response.aiter_raw(chunk_size = self.chunk_size):
                 len_chunk = len(chunk)
-                if block.stop is not Inf and block.process + len_chunk < block.stop:
+                await self._limit.update(len_chunk)
+                if block.stop != UnKonwnSize and block.process + len_chunk < block.stop:
                     await self._handing_chunk(block, chunk, len_chunk)
                     self._process += len_chunk
                     block.process += len_chunk
@@ -196,7 +207,8 @@ class DownloadBase(ABC):
             async with self.task_group as tg:
                 self.start_block(block)
                 await self.inited.wait()
-                deamo = self.deamon_auto() if self.target_task_num is None else self.deamon_default()
+                print(f"Start download {self._contect_name}({self._contect_length}\tresumable:{self._accept_range})")
+                deamo = self.deamon_auto() if self.auto  else self.deamon_default()
                 tg.create_task(deamo)
 
         except asyncio.CancelledError:
@@ -245,7 +257,9 @@ class DownloadBase(ABC):
                 block.stop = block.process + size
 
     async def deamon_auto(self, check_time = 1):
+        """auto control num of task strategy"""
         # 初始化变量
+        print("deamp_auto start")
         recorder = SpeedRecoder(self._process)
         threshold = 0.1 # 判断阈值
         accuracy = 1  # 判断精度
@@ -277,11 +291,12 @@ class DownloadBase(ABC):
                 speed_delta_per_new_thread = (info.speed - info_cache.speed) / (task_num - task_num_cache)# 平均速度增量
                 offset = (1 / info.time) * accuracy#误差补偿偏移
                 efficiency = speed_delta_per_new_thread / max_speed_per_connect# 线程效率
+                print(f"speed:{info.speed:.2f}B/s,task_num:{self._task_num},speed_per_connect:{speed_per_connect:.2f}B/s,max_speed_per_connect:{max_speed_per_connect:.2f}B/s,speed_delta_per_new_thread:{speed_delta_per_new_thread:.2f}B/s,offset:{offset:.2f}B/s,efficiency:{efficiency:.2f}")
                 if efficiency >= threshold + offset:
-                    if self._task_num  < self.target_task_num:
+                    if self._task_num  < self.max_task_num:
                         self.divition_task()#create new task
 
-                    elif self._task_num > self.target_task_num:
+                    elif self._task_num > self.max_task_num:
                         self.cancel_one_task()
 
                 if self._task_num == 0 and self._process < self._contect_length:
@@ -290,12 +305,13 @@ class DownloadBase(ABC):
             await asyncio.sleep(check_time)
 
     async def deamon_default(self, check_time = 1):
+        '''keep_max_task_num strategy'''
         while self._process < self._stop:
             await asyncio.sleep(check_time)
-            if self._task_num < self.target_task_num:
-                self.divition_task(self.target_task_num - self._task_num)
+            if self._task_num < self.max_task_num:
+                self.divition_task(self.max_task_num - self._task_num)
 
-            elif self._task_num > self.target_task_num:
+            elif self._task_num > self.max_task_num:
                         self.cancel_one_task()
 
     async def download(self, block: Block):
@@ -331,6 +347,15 @@ class StreamBase(DownloadBase):
         if block.process < self.next_iterable_check_point <= block.process + chunk_size:
             self.iterable.set()
 
+    async def __aenter__(self):
+        self.main_task = asyncio.create_task(self.main())
+        await self.inited.wait()
+        return self
+    
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        self.main_task.cancel()
+        return False
+
     async def __aiter__(self):
         """异步迭代器, 负责截断，保证内容是否合法'''"""
         main_task = asyncio.create_task(self.main())
@@ -347,7 +372,9 @@ class StreamBase(DownloadBase):
                 chunk = chunk[: self._stop - self._iter_process]
             self._iter_process += len(chunk)
             yield chunk
+        print("download end")
         await main_task
+
 
 class BufferBase(StreamBase):
     """有缓冲大小限制的基本策略"""
@@ -435,7 +462,7 @@ class CircleBufferBase(BufferBase):
 class FileBase(DownloadBase):
     """写入(异步）文件策略"""
 
-    def __init__(self, url, file_name :str|None= None,path:None|Path = None, task_num = 16, chunk_size = None, blocks:None|list[Block] = None, start = 0, step = 16 * KB) -> None:
+    def __init__(self, url, file_name :str|None= None,path:None|Path = None, task_num = 16, chunk_size = None, blocks:None|list[Block] = None) -> None:
         super().__init__(url,task_num, chunk_size, blocks=blocks)
         self.file_name = file_name
         self.path = path
@@ -449,7 +476,7 @@ class FileBase(DownloadBase):
             if self.file_name is not None:
                 self.dest = self.path / self.file_name
             else:
-                self.dest = self.path / self.contet_name
+                self.dest = self.path / self._contect_name
         elif self.path.is_file():
             self.dest = self.path
         else:
@@ -494,7 +521,7 @@ class BytesBase(DownloadBase):
     """使用内存策略"""
 
     async def _init_cache(self):
-        if self._contect_length is not Inf:
+        if self._contect_length != UnKonwnSize:
             self._context = bytearray(self._contect_length)
         else:
             self._context = bytearray()
@@ -531,15 +558,15 @@ class ByteBuffer(CircleBufferBase):
     async def _init_cache(self):
         self._buffer = bytearray()
 
-    async def _read_cache(self):
-        off = self._iter_process % self._buffering
-        if off + self._iter_step <= self._buffering:
-            c = self._buffer[off : off + self._iter_step]
+    async def _read_cache(self, process:int, step:int):
+        off = process % self._buffering
+        if off + step <= self._buffering:
+            c = self._buffer[off : off + step]
         else:
                 c = self._buffer[off : ]
-                c += self._buffer[ : off + self._iter_step - self._buffering]
-        if 0 < self._stop - self._iter_process < self._iter_step:
-            c = c[:self._stop - self._iter_process]
+                c += self._buffer[ : off + step - self._buffering]
+        if 0 < self._stop - process < step:
+            c = c[:self._stop - process]
         return c
 
     async def _close_cache(self):
@@ -565,24 +592,26 @@ class FileBuffer(CircleBufferBase, TempFileBase):
                 await self.tempfile.seek(0)
                 await self.tempfile.write(chunk[off + chunk_size - self._buffering :])
 
-    async def _read_cache(self):
-        off = self._iter_process % self._buffering
-        if off + self._iter_step <= self._buffering:
+    async def _read_cache(self, process:int, step:int):
+        off = process % self._buffering
+        if off + step <= self._buffering:
             async with self.file_lock:
                 await self.tempfile.seek(off)
-                chunk = await self.tempfile.read(self._iter_step)
+                chunk = await self.tempfile.read(step)
         else:
             async with self.file_lock:
                 await self.tempfile.seek(off)
                 chunk = await self.tempfile.read()
                 await self.tempfile.seek(0)
-                chunk = chunk + await self.tempfile.read(off + self._iter_step - self._buffering)
-        if 0 < self._stop - self._iter_process < self._iter_step:
-            chunk = chunk[:self._stop - self._iter_process]
+                chunk = chunk + await self.tempfile.read(off + step - self._buffering)
+        if 0 < self._stop - process < step:
+            chunk = chunk[:self._stop - process]
         return chunk
 
     async def _close_cache(self):
         pass
+
+
 
 class BlockBytes(StreamBase):
 
